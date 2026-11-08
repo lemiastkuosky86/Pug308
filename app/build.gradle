@@ -1,29 +1,42 @@
-plugins { id 'com.android.application' }
+plugins {
+    id 'com.android.application'
+}
 
-// Para atualizar a instalação atual, configure a MESMA chave usada no APK anterior.
-// Sem os quatro valores de ambiente, o Android Gradle Plugin usa a chave debug
-// temporária do executor do GitHub (serve para instalação nova, não atualização).
+// Assinatura original do Peugeot Launcher
 def previousKey = System.getenv('PEUGEOT_KEYSTORE_FILE')
 def previousStorePass = System.getenv('PEUGEOT_KEYSTORE_PASSWORD')
 def previousAlias = System.getenv('PEUGEOT_KEY_ALIAS')
 def previousKeyPass = System.getenv('PEUGEOT_KEY_PASSWORD')
-def usePreviousKey = [previousKey, previousStorePass, previousAlias, previousKeyPass].every { it != null && !it.isEmpty() }
+
+def usePreviousKey = [
+    previousKey,
+    previousStorePass,
+    previousAlias,
+    previousKeyPass
+].every { it != null && !it.isEmpty() }
 
 android {
     namespace 'com.peugeot308.oem'
     compileSdk 35
-    buildFeatures { buildConfig true }
+
+    buildFeatures {
+        buildConfig true
+    }
+
     defaultConfig {
         applicationId 'com.peugeot308.oem'
         minSdk 26
         targetSdk 28
-        versionCode 114
-        versionName '1.14'
+
+        versionCode 117
+        versionName '1.17'
     }
+
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
     }
+
     if (usePreviousKey) {
         signingConfigs {
             debug {
@@ -33,6 +46,7 @@ android {
                 keyPassword previousKeyPass
             }
         }
+
         buildTypes {
             debug {
                 signingConfig signingConfigs.debug
