@@ -1,65 +1,86 @@
+
 name: Compilar Peugeot 308 APK
 
 on:
   workflow_dispatch:
   push:
-    branches: [main, master]
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: read
 
 jobs:
   build:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    timeout-minutes: 25
+    name: Gerar APK Peugeot 308
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
     env:
       PEUGEOT_KEYSTORE_BASE64: ${{ secrets.PEUGEOT_KEYSTORE_BASE64 }}
       PEUGEOT_KEYSTORE_PASSWORD: ${{ secrets.PEUGEOT_KEYSTORE_PASSWORD }}
       PEUGEOT_KEY_ALIAS: ${{ secrets.PEUGEOT_KEY_ALIAS }}
       PEUGEOT_KEY_PASSWORD: ${{ secrets.PEUGEOT_KEY_PASSWORD }}
+
     steps:
-      - name: Obter codigo
+      - name: Baixar codigo do repositorio
         uses: actions/checkout@v4
 
-      - name: Preparar Java 17
-        uses: actions/setup-java@v4
+      - name: Configurar Java 17
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Preparar Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Configurar Android SDK
+        uses: android-actions/setup-android@v4
 
-      - name: Instalar SDK Android 35
-        run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0' 'platform-tools'
+      - name: Instalar Android SDK 35
+        run: |
+          sdkmanager "platforms;android-35" \
+                     "build-tools;35.0.0" \
+                     "platform-tools"
 
-      - name: Preparar Gradle 8.9
+      - name: Configurar Gradle 8.9
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
 
-      - name: Usar chave original quando configurada
+      - name: Preparar assinatura original
         shell: bash
         run: |
           if [[ -n "$PEUGEOT_KEYSTORE_BASE64" ]]; then
-            if [[ -z "$PEUGEOT_KEYSTORE_PASSWORD" || -z "$PEUGEOT_KEY_ALIAS" || -z "$PEUGEOT_KEY_PASSWORD" ]]; then
-              echo 'ERRO: configure todos os quatro Secrets da assinatura.' >&2
+
+            if [[ -z "$PEUGEOT_KEYSTORE_PASSWORD" ||
+                  -z "$PEUGEOT_KEY_ALIAS" ||
+                  -z "$PEUGEOT_KEY_PASSWORD" ]]; then
+              echo "ERRO: Faltam Secrets da assinatura."
               exit 1
             fi
-            printf '%s' "$PEUGEOT_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/peugeot-original.keystore"
+
+            printf '%s' "$PEUGEOT_KEYSTORE_BASE64" \
+              | base64 --decode \
+              > "$RUNNER_TEMP/peugeot-original.keystore"
+
             echo "PEUGEOT_KEYSTORE_FILE=$RUNNER_TEMP/peugeot-original.keystore" >> "$GITHUB_ENV"
-            echo 'Assinatura original configurada.'
+
+            echo "Chave original configurada."
           else
-            echo 'AVISO: APK sera assinado com chave DEBUG temporaria do GitHub.'
-            echo 'Esse APK nao atualiza uma instalacao assinada com outra chave.'
+            echo "AVISO: Compilando com assinatura DEBUG."
+            echo "O APK pode nao atualizar uma instalacao existente."
           fi
 
-      - name: Compilar APK
-        run: gradle --no-daemon :app:assembleDebug
+      - name: Compilar Peugeot 308 Launcher
+        run: |
+          gradle --no-daemon --stacktrace :app:assembleDebug
 
-      - name: Conferir arquivo
-        run: test -s app/build/outputs/apk/debug/app-debug.apk
+      - name: Verificar APK gerado
+        run: |
+          test -s app/build/outputs/apk/debug/app-debug.apk
+          ls -lh app/build/outputs/apk/debug/
 
-      - name: Disponibilizar APK e manifesto
+      - name: Publicar APK para download
         uses: actions/upload-artifact@v4
         with:
           name: Peugeot308Launcher-1.14-v114
