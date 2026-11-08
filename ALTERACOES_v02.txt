@@ -1,0 +1,7 @@
+Versao 0.2 - teste incremental
+- Remove o Dialog de volume; indicador discreto no topo por 2 segundos.
+- Feedback haptico nativo em todos os botoes criados pelo metodo button().
+- Bip suave opcional em Config., desativado por padrao.
+- Contornos mais discretos e dock mais compacto.
+- Ainda nao reproduz integralmente o mockup premium; clima, Spotify metadata e CANBUS continuam pendentes.
+Abra no Android Studio e gere Build APK(s). Copie app-debug.apk para downloads.
