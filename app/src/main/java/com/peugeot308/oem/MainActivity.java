@@ -26,7 +26,7 @@ import java.text.*;
 import java.util.*;
 
 /**
- * Peugeot 308 OEM Launcher v1.14
+ * Peugeot 308 OEM Launcher v1.17
  * - Visual "concessionária": superfícies planas, ícones vetoriais, tipografia em hierarquia
  * - Tema automático dia/noite (nascer/pôr do sol), escuro ou claro
  * - Estados de toque, escala uniforme (sem distorcer), cache de ícones, aceleração por hardware
@@ -40,6 +40,8 @@ public class MainActivity extends Activity {
     private MediaSessionManager mediaManager;
     private MediaController mediaCtl;
     private String songTitle = "Nenhuma música em reprodução", songArtist = "Abra o Spotify para começar", mediaSource = "Spotify";
+    private String userLyrics="", userLyricsSong="";
+    private boolean lyricsOn=false;
     private Bitmap albumArt;
     private boolean mediaPlaying = false, mediaIsSpotify = true, mediaPermission = false;
     private long songDuration = 0, songPosBase = 0, songPosStamp = 0;
@@ -50,6 +52,7 @@ public class MainActivity extends Activity {
     };
 
     private Dashboard dashboard;
+    private JancarBridge jancarBridge;
     private int accentBase = Color.rgb(0, 174, 255), accent = accentBase, onAccent = Color.WHITE;
     private boolean beep;
     private boolean volumeVisible;
@@ -101,7 +104,7 @@ public class MainActivity extends Activity {
     private long radarFetchAt = 0;
     private boolean radarFetching = false;
     private final HashMap<Long, Long> radarAlerted = new HashMap<>();
-    private static final long SHINE_PERIOD = 6500L, SHINE_MS = 1500L;
+    private static final long SHINE_PERIOD = 3200L, SHINE_MS = 850L;
     private static final float SET_SCALE = 1.5f; // tamanho dos menus de configuração
     private boolean speedAlert = false;
     private int speedLimit = 110;
@@ -140,12 +143,13 @@ public class MainActivity extends Activity {
             if (l.hasBearing() && kmh >= 4f) gpsBearing = l.getBearing();
             gpsAlt = l.hasAltitude() ? l.getAltitude() : Double.NaN;
             gpsLat = l.getLatitude(); gpsLon = l.getLongitude();
+            if (weatherAuto) tryAutoWeather();
         }
         @Override public void onStatusChanged(String provider, int status, Bundle extras) {}
         @Override public void onProviderEnabled(String provider) {}
         @Override public void onProviderDisabled(String provider) {}
     };
-    private boolean needGps() { return vehicleMenuEnabled || topWidgetEnabled || drivingEnabled || radarEnabled || speedAlert || (snd != null && snd.autoVolOn); }
+    private boolean needGps() { return weatherAuto || vehicleMenuEnabled || topWidgetEnabled || drivingEnabled || radarEnabled || speedAlert || (snd != null && snd.autoVolOn); }
     private boolean gpsFresh() { return gpsLastFix > 0 && SystemClock.elapsedRealtime() - gpsLastFix < 6000; }
     private void startGps() {
         if (gpsRunning || !needGps()) return;
@@ -179,6 +183,14 @@ public class MainActivity extends Activity {
 
     // ---- Clima ----
     private String weatherCity = "", weatherLine = "Configure a cidade", weatherDetail = "";
+    private boolean weatherAuto = false;
+    private double weatherAutoLat = Double.NaN, weatherAutoLon = Double.NaN;
+    private long weatherAutoChecked = 0;
+    private String brandTitle = "PEUGEOT 308";
+    private boolean minimalIcons = true;
+    private final HashSet<String> originalAppIcons = new HashSet<>();
+    private boolean standaloneVehicleButton = true;
+    private int vehicleSelectedPage = 0;
     private String weatherCondition = "--", weatherHigh = "--", weatherLow = "--", weatherWind = "--", weatherRain = "--", weatherHumidity = "--";
     private int weatherCode = -1, sunriseMin = -1, sunsetMin = -1;
     private long lastWeather = 0, lastWeatherSuccess = 0;
@@ -199,7 +211,7 @@ public class MainActivity extends Activity {
     private Runnable rampTask;
     private ConnectivityManager.NetworkCallback netCallback;
     private String updateBase = DEFAULT_SERVER;
-    private String ghRepo = "", notifiedVersion = ""; private int updateSource = 0; private boolean autoUpdate = true, updateChecking = false;
+    private String ghRepo = "lemiastkuosky86/Pug308", notifiedVersion = ""; private int updateSource = 0; private boolean autoUpdate = true, updateChecking = false;
     private long updateDownloadId = -1; private Uri pendingInstall = null; private BroadcastReceiver downloadReceiver;
 
     private final Runnable tick = new Runnable() {
@@ -328,7 +340,7 @@ public class MainActivity extends Activity {
         beep = prefs.getBoolean("beep", false);
         themeMode = Math.max(0, Math.min(2, prefs.getInt("theme", 0)));
         updateBase = prefs.getString("server", DEFAULT_SERVER);
-        ghRepo = prefs.getString("gh_repo", ""); updateSource = prefs.getInt("upd_source", 0); autoUpdate = prefs.getBoolean("upd_auto", true); notifiedVersion = prefs.getString("upd_notified", "");
+        ghRepo = prefs.getString("gh_repo", "lemiastkuosky86/Pug308"); if (ghRepo.trim().isEmpty()) ghRepo = "lemiastkuosky86/Pug308"; updateSource = prefs.getInt("upd_source", 0); autoUpdate = prefs.getBoolean("upd_auto", true); notifiedVersion = prefs.getString("upd_notified", "");
         vehicleMenuEnabled = prefs.getBoolean("vehicle_menu", prefs.getBoolean("vehicle_card", false));
         topWidgetEnabled = prefs.getBoolean("top_widget", true);
         for (int i = 0; i < vehicleVisible.length; i++) vehicleVisible[i] = prefs.getBoolean("vehicle_visible_" + i, i != 10);
@@ -343,8 +355,19 @@ public class MainActivity extends Activity {
         for (int i = 0; i < N_DOCK; i++) dockEnabled[i] = i != 6 && prefs.getBoolean("dock_enabled_" + i, i != 4);
         for (String pkg : prefs.getString("pinned_apps", "").split(",")) if (!pkg.isEmpty() && !pinnedPackages.contains(pkg)) pinnedPackages.add(pkg);
         weatherCity = prefs.getString("city", "");
+        weatherAuto = prefs.getBoolean("weather_auto", false);
+        brandTitle = prefs.getString("brand_title", "PEUGEOT 308");
+        minimalIcons = prefs.getBoolean("minimal_icons", true);
+        lyricsOn=prefs.getBoolean("lyrics_on",false);
+        userLyrics=prefs.getString("lyrics_text","");
+        userLyricsSong=prefs.getString("lyrics_song","");
+        for(String packageName:prefs.getString("original_app_icons","").split(","))
+            if(!packageName.isEmpty()) originalAppIcons.add(packageName);
+        standaloneVehicleButton = prefs.getBoolean("standalone_vehicle_button", true);
         applyTheme();
         dashboard = new Dashboard();
+        jancarBridge = new JancarBridge(this, () -> handler.post(() -> { if (dashboard != null) dashboard.invalidate(); }));
+        jancarBridge.start();
         setContentView(dashboard);
         mediaManager = (MediaSessionManager) getSystemService(MEDIA_SESSION_SERVICE);
         updateMedia();
@@ -354,7 +377,7 @@ public class MainActivity extends Activity {
         if (needGps() && checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) need.add(Manifest.permission.ACCESS_FINE_LOCATION);
         if (!need.isEmpty()) requestPermissions(need.toArray(new String[0]), 14); else startGps();
         registerNetworkWatcher();
-        if (!weatherCity.isEmpty()) fetchWeather();
+        if (!weatherCity.isEmpty() && !weatherAuto) fetchWeather(); else if (weatherAuto) tryAutoWeather();
         registerScreenReceiver();
         handler.post(shineTick);
         if (!bootArmed) { bootArmed = true; if (SystemClock.elapsedRealtime() < 6 * 60 * 1000L) armStartupFade(); } // ligou o carro (boot recente)
@@ -366,6 +389,7 @@ public class MainActivity extends Activity {
     @Override protected void onDestroy() {
         try { if (eqDialog != null) eqDialog.dismiss(); } catch (Exception ignored) {}
         if (snd != null) snd.saveNow();
+        if (jancarBridge != null) jancarBridge.stop();
         try { if (downloadReceiver != null) unregisterReceiver(downloadReceiver); } catch (Exception ignored) {}
         if (mediaCtl != null) mediaCtl.unregisterCallback(mediaCallback);
         handler.removeCallbacksAndMessages(null);
@@ -397,7 +421,7 @@ public class MainActivity extends Activity {
         if (dashboard != null) dashboard.invalidate();
     }
     private void alertBeep() {
-        try { if (alertTone == null) alertTone = new ToneGenerator(AudioManager.STREAM_MUSIC, 90); alertTone.startTone(ToneGenerator.TONE_PROP_BEEP2, 700); } catch (Exception ignored) {}
+        try { if (alertTone == null) alertTone = new ToneGenerator(AudioManager.STREAM_MUSIC, 90); alertTone.startTone(alertKind == 0 ? ToneGenerator.TONE_PROP_BEEP2 : ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, alertKind == 0 ? 600 : 350); } catch (Exception ignored) {}
     }
     private static double haversine(double la1, double lo1, double la2, double lo2) {
         double dLa = Math.toRadians(la2 - la1), dLo = Math.toRadians(lo2 - lo1);
@@ -653,6 +677,26 @@ public class MainActivity extends Activity {
         return found;
     }
 
+    // Acesso ao aplicativo OEM sem duplicar funções nem enviar comandos ao CAN.
+    private void openJancarApp(boolean carApp) {
+        Intent list = new Intent(Intent.ACTION_MAIN); list.addCategory(Intent.CATEGORY_LAUNCHER);
+        List<android.content.pm.ResolveInfo> apps = getPackageManager().queryIntentActivities(list, 0);
+        if (apps != null) for (android.content.pm.ResolveInfo app : apps) {
+            String pkg = app.activityInfo.packageName;
+            String name = app.loadLabel(getPackageManager()).toString().toLowerCase(Locale.ROOT);
+            boolean match = carApp ? (name.contains("veículo") || name.contains("veiculo") || name.contains("car info") || name.contains("canbus"))
+                                   : (name.equals("rádio") || name.equals("radio") || name.contains("fm radio"));
+            if (!match || getPackageName().equals(pkg)) continue;
+            try {
+                Intent target = new Intent(list);
+                target.setClassName(pkg, app.activityInfo.name);
+                startActivity(target);
+                return;
+            } catch (RuntimeException ignored) { }
+        }
+        snack(carApp ? "App original do veículo não localizado" : "Rádio original não localizado");
+    }
+
     // ---- Botões do carro (RT4) ----
     /** Ponto de ligação com o CANBUS. Enquanto não houver protocolo conhecido da Jancar, nada é transmitido ao carro. */
     private boolean canSend(String command) { return false; }
@@ -663,6 +707,30 @@ public class MainActivity extends Activity {
             sendBroadcast(it); // para um app/serviço ponte (Tasker, serviço da Jancar etc.) que queira ouvir
         } catch (Exception ignored) {}
         if (!canSend(vbtnCmd[i])) snack("CANBUS não conectado: o comando não chegou ao carro");
+    }
+    private void vehicleOptionsMenu() {
+        String[] options={"Escolher indicadores", "Próxima página de indicadores", "Abrir informações da Jancar", "Editar botões do veículo"};
+        new AlertDialog.Builder(this).setTitle("Computador de bordo")
+           .setItems(options,(d,which)->{
+               if(which==0){settings(3);}
+               else if(which==1){vehicleSelectedPage++;dashboard.invalidate();}
+               else if(which==2){openJancarApp(true);}
+               else {editVehicleButton(0,null);}
+           }).setNegativeButton("Fechar",null).show();
+    }
+    private void openLyrics(){
+        String now=songTitle == null?"":songTitle;
+        boolean match=now.equalsIgnoreCase(userLyricsSong) && !userLyrics.trim().isEmpty();
+        LinearLayout body=vertical();body.setPadding(dp(18),dp(14),dp(18),dp(12));
+        body.addView(label(match?"Letra para: "+now:"Sem letra cadastrada para: "+now,17,cText,true));
+        TextView text=label(match?userLyrics:"A sessão de mídia não fornece letras de músicas. Você pode inserir letras que tenha direito de usar.",15,cMuted,false);
+        text.setGravity(Gravity.TOP);text.setPadding(0,dp(14),0,dp(14));body.addView(text);
+        ScrollView wrap=new ScrollView(this);wrap.addView(body);
+        new AlertDialog.Builder(this).setTitle("Spotify • Letras")
+            .setView(wrap).setPositiveButton("Fechar",null)
+            .setNeutralButton("Inserir texto",(d,i)->popupInput("Letras fornecidas por você","Cole texto de sua autoria ou autorizado",match?userLyrics:"",v->{
+                userLyrics=v;userLyricsSong=now;getPreferences(0).edit().putString("lyrics_text",v).putString("lyrics_song",now).apply();
+            })).show();
     }
     private void editVehicleButton(int i, Runnable after) {
         promptText("Nome do botão " + (i + 1), "Ex.: MENU", vbtnLabel[i], lb -> {
@@ -712,10 +780,24 @@ public class MainActivity extends Activity {
                 if (idx >= groups[gI][1]) { row.addView(new View(this), new LinearLayout.LayoutParams(0, -1, 1)); continue; }
                 final boolean sel = idx == presetIndex;
                 LinearLayout cell = vertical(); cell.setGravity(Gravity.CENTER_HORIZONTAL);
-                View dot = new View(this);
-                GradientDrawable g = new GradientDrawable(); g.setShape(GradientDrawable.OVAL); g.setColor(PRESET_ACCENTS[idx]); g.setStroke(dp(sel ? 3 : 1), sel ? cText : cHair);
-                dot.setBackground(g);
-                cell.addView(dot, new LinearLayout.LayoutParams(dp(38), dp(38)));
+                View dot = new View(this) {
+                    final Paint preview = new Paint(3);
+                    @Override protected void onDraw(Canvas cv) {
+                        float w=getWidth(),h=getHeight(); int bg=idx<5?0xff0b0d11:idx<12?0xff292c30:0xff0b1b2d;
+                        preview.setColor(bg);cv.drawRoundRect(0,0,w,h,dp(5),dp(5),preview);
+                        int light=PRESET_ACCENTS[idx];
+                        preview.setColor(light);
+                        cv.drawRoundRect(w*.06f,h*.12f,w*.30f,h*.17f,dp(2),dp(2),preview);
+                        preview.setColor(idx<12?0xff44494e:0xff18334a);
+                        for(int z=0;z<3;z++)cv.drawRoundRect(w*(.06f+.30f*z),h*.30f,w*(.29f+.30f*z),h*.84f,dp(2),dp(2),preview);
+                        preview.setColor(light);cv.drawRoundRect(w*.12f,h*.53f,w*.23f,h*.57f,dp(1),dp(1),preview);
+                        cv.drawRoundRect(w*.42f,h*.67f,w*.52f,h*.71f,dp(1),dp(1),preview);
+                        cv.drawCircle(w*.76f,h*.53f,dp(2),preview);
+                        preview.setColor(sel?cText:cHair);preview.setStyle(Paint.Style.STROKE);preview.setStrokeWidth(dp(sel?2:1));
+                        cv.drawRoundRect(1,1,w-1,h-1,dp(5),dp(5),preview);preview.setStyle(Paint.Style.FILL);
+                    }
+                };
+                cell.addView(dot, new LinearLayout.LayoutParams(dp(63), dp(39)));
                 TextView nm = label(PRESET_NAMES[idx], 10, sel ? cText : cMuted, sel); nm.setGravity(Gravity.CENTER); nm.setSingleLine(true);
                 cell.addView(nm, new LinearLayout.LayoutParams(-1, dp(22)));
                 row.addView(cell, new LinearLayout.LayoutParams(0, -1, 1));
@@ -1035,7 +1117,7 @@ public class MainActivity extends Activity {
         TextView close = label("✕", 22, cText, true); close.setGravity(Gravity.CENTER); close.setBackground(panel(cSurf2, 12));
         header.addView(close, new LinearLayout.LayoutParams(dp(48), dp(44))); root.addView(header);
         divider(root);
-        root.addView(label("Toque no aplicativo para abrir  •  ☆ para fixar na tela principal", 13, cMuted, false), new LinearLayout.LayoutParams(-1, dp(33)));
+        root.addView(label("Toque para abrir  •  ☆ fixar  •  MIN/ORIG alterna o ícone", 13, cMuted, false), new LinearLayout.LayoutParams(-1, dp(33)));
         EditText search = new EditText(this); search.setSingleLine(true); search.setTextSize(16);
         search.setTextColor(cText); search.setHintTextColor(cDim); search.setHint("Pesquisar aplicativos...");
         search.setPadding(dp(14), 0, dp(14), 0); search.setBackground(panel(cSurf2, 12));
@@ -1066,6 +1148,17 @@ public class MainActivity extends Activity {
                 TextView star = label(pinned ? "★" : "☆", 28, pinned ? cOk : cDim, true);
                 star.setGravity(Gravity.CENTER); star.setBackground(panel(cSurf2, 12));
                 item.addView(star, new LinearLayout.LayoutParams(dp(55), dp(48)));
+                if(pinned){
+                    TextView style=label(originalAppIcons.contains(pkg)?"ORIG":"MIN",11,accent,true);
+                    style.setGravity(Gravity.CENTER);style.setBackground(panel(cSurf2,12));
+                    LinearLayout.LayoutParams styleParams=new LinearLayout.LayoutParams(dp(57),dp(48));styleParams.setMargins(dp(6),0,0,0);
+                    item.addView(style,styleParams);
+                    style.setOnClickListener(v->{
+                        if(!originalAppIcons.remove(pkg)) originalAppIcons.add(pkg);
+                        getPreferences(0).edit().putString("original_app_icons",android.text.TextUtils.join(",",originalAppIcons)).apply();
+                        dashboard.invalidate();render[0].run();
+                    });
+                }
                 icon.setOnClickListener(v -> { dialog.dismiss(); launchPackage(pkg); });
                 title.setOnClickListener(v -> { dialog.dismiss(); launchPackage(pkg); });
                 star.setOnClickListener(v -> {
@@ -1087,8 +1180,63 @@ public class MainActivity extends Activity {
         showBig(dialog, 0.82f, 0.88f); render[0].run();
     }
 
+    // Relatório de diagnóstico seguro: somente estados da aplicação; não registra coordenadas,
+    // credenciais, músicas, endereços, conteúdo de notificações nem parâmetros privados da MCU.
+    private String diagnosticReport() {
+        StringBuilder b = new StringBuilder("PEUGEOT LAUNCHER - DIAGNÓSTICO DE CAMPO\n");
+        b.append("Versão: ").append(BuildConfig.VERSION_NAME).append(" / ").append(BuildConfig.VERSION_CODE).append('\n');
+        b.append("Android API: ").append(Build.VERSION.SDK_INT).append('\n');
+        b.append("Hardware: ").append(Build.MANUFACTURER).append(" / ").append(Build.MODEL).append('\n');
+        b.append("Pacote: ").append(getPackageName()).append('\n');
+        b.append("Wi-Fi: ").append(wifiConnected ? "ativo" : "inativo").append('\n');
+        b.append("Bluetooth: ").append(btConnected ? "ativo" : "inativo").append('\n');
+        b.append("Rede: ").append(netOnline ? "online" : "offline").append('\n');
+        b.append("Localização: ").append(checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ? "permitida" : "sem permissão").append('\n');
+        b.append("GPS: ").append(gpsFresh() ? "posição recente" : "sem posição recente").append('\n');
+        b.append("Clima: ").append(lastWeatherSuccess > 0 ? "consulta concluída" : "sem consulta concluída").append('\n');
+        b.append("Clima GPS: ").append(weatherAuto ? "ligado" : "desligado").append('\n');
+        b.append("CAN telemetria: ").append(hasCanData() ? "válida" : "não disponível").append('\n');
+        b.append("Widget veículo: ").append(vehicleMenuEnabled ? "ligado" : "desligado").append('\n');
+        b.append("Indicadores habilitados: ");
+        int count = 0;for (boolean visible : vehicleVisible) if (visible) count++;
+        b.append(count).append('\n');
+        b.append("Atalhos favoritos: ").append(pinnedPackages.size()).append('\n');
+        b.append("Áudio equalizador: ").append(snd != null ? (snd.effectOk ? "efeito criado" : "efeito não confirmado") : "motor ausente").append('\n');
+        b.append("Áudio loudness: ").append(snd != null && snd.loudOn ? "configurado" : "desligado").append('\n');
+        b.append("Áudio balanço/fader: sem API OEM confirmada\n");
+        b.append("Spotify: ").append(mediaPermission ? "acesso à sessão permitido" : "acesso à sessão não confirmado").append('\n');
+        b.append("Atualização: ").append(updateSource == 0 ? "GitHub" : "servidor local").append('\n');
+        b.append("--- SERVIÇO JANCAR ---\n");
+        b.append(jancarBridge == null ? "Não iniciado" : jancarBridge.diagnostic()).append('\n');
+        b.append("Nota: vínculo com IVI Car não confirma valores CAN, e estado do EQ não confirma efeito audível.\n");
+        return b.toString();
+    }
+    private void copyTestReport() {
+        android.content.ClipboardManager clip = (android.content.ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+        if (clip == null) { snack("Área de transferência indisponível"); return; }
+        clip.setPrimaryClip(ClipData.newPlainText("Relatório Peugeot Launcher", diagnosticReport()));
+        snack("Relatório copiado: pode enviar ao ChatGPT");
+    }
+    private void showTestReport() {
+        if (jancarBridge != null) jancarBridge.start();
+        ScrollView scroll = new ScrollView(this);
+        TextView report = label(diagnosticReport(), 13, cText, false);
+        report.setTextIsSelectable(true);report.setPadding(dp(18),dp(14),dp(18),dp(14));
+        scroll.addView(report);
+        AlertDialog dialog = new AlertDialog.Builder(this)
+            .setTitle("Diagnóstico • Peugeot Launcher")
+            .setView(scroll)
+            .setPositiveButton("Fechar", null)
+            .setNeutralButton("Copiar", (d,w) -> copyTestReport())
+            .setNegativeButton("Atualizar", null)
+            .create();
+        dialog.setOnShowListener(d -> dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setOnClickListener(v -> report.setText(diagnosticReport())));
+        dialog.show();
+    }
+
     // ---------------------------------------------------------------- configurações (abas, sem rolagem)
-    private void settings() {
+    private void settings() { settings(0); }
+    private void settings(int initialTab) {
         feedback();
         LinearLayout root = vertical(); root.setPadding(dp(20), dp(16), dp(20), dp(16)); root.setBackground(panel(cBg1, 20));
         LinearLayout header = new LinearLayout(this); header.setGravity(Gravity.CENTER_VERTICAL);
@@ -1102,7 +1250,7 @@ public class MainActivity extends Activity {
         ScrollView pageScroll = new ScrollView(this); pageScroll.addView(page);
         root.addView(pageScroll, new LinearLayout.LayoutParams(-1, 0, 1));
         String[] titles = {"Aparência", "Clima", "Atalhos", "Veículo", "Alertas", "Som", "Sistema"};
-        final int[] current = {0}, shownTab = {-1};
+        final int[] current = {Math.max(0, Math.min(6, initialTab))}, shownTab = {-1};
         Runnable[] redraw = new Runnable[1];
         redraw[0] = () -> {
             final int keepY = shownTab[0] == current[0] ? pageScroll.getScrollY() : 0;
@@ -1120,6 +1268,13 @@ public class MainActivity extends Activity {
                 case 0: {
                     section(page, "APARÊNCIA", "32 temas prontos (preto, cinza chumbo e cores), claro/escuro, capa do álbum e brilho");
                     page.addView(label("Cor do tema: " + PRESET_NAMES[presetIndex], 15, cText, true));
+                    LinearLayout titleRow=new LinearLayout(this);page.addView(titleRow);
+                    titleRow.addView(label("Texto superior: "+brandTitle,14,cText,false),new LinearLayout.LayoutParams(0,dp(45),1));
+                    titleRow.addView(smallButton("Alterar",()->popupInput("Texto do cabeçalho","Até 18 caracteres",brandTitle,v->{
+                        brandTitle=v.trim().isEmpty()?"PEUGEOT 308":v.trim().substring(0,Math.min(18,v.trim().length()));
+                        getPreferences(0).edit().putString("brand_title",brandTitle).apply();dashboard.invalidate();redraw[0].run();
+                    })),new LinearLayout.LayoutParams(dp(110),dp(45)));
+                    page.addView(label("Miniaturas dos painéis (prévia de cor)",12,cMuted,false));
                     presetGrid(page, () -> redraw[0].run());
                     divider(page);
                     page.addView(label("Tema atual: " + (themeMode == 0 ? "Automático (nascer e pôr do sol)" : themeMode == 1 ? "Escuro" : "Claro"), 15, cText, true));
@@ -1152,7 +1307,14 @@ public class MainActivity extends Activity {
                 }
                 case 1: {
                     section(page, "PREVISÃO DO TEMPO", "Cidade e atualização dos dados meteorológicos");
-                    page.addView(label("Cidade: " + (weatherCity.isEmpty() ? "Não configurada" : weatherCity), 20, cText, true));
+                    page.addView(label("Cidade: " + (weatherAuto ? "Automático (GPS)" : weatherCity.isEmpty() ? "Não configurada" : weatherCity), 20, cText, true));
+                    switchRow(page, "Usar minha localização (atualizar ao viajar)", weatherAuto, (v, checked) -> {
+                        weatherAuto = checked; getPreferences(0).edit().putBoolean("weather_auto", checked).apply();
+                        refreshGpsNeed();
+                        if (checked) { weatherAutoChecked = 0; tryAutoWeather(); }
+                        else if (!weatherCity.isEmpty()) fetchWeather();
+                    });
+                    page.addView(label("No modo GPS, a previsão usa as coordenadas atuais. Consulta a cada 30 min ou ao mudar mais de 15 km; requer sinal GPS e internet.", 12, cMuted, false));
                     page.addView(label("Condição: " + weatherCondition + "   •   " + (weatherCity.isEmpty() ? "--" : weatherLine), 15, cMuted, false));
                     LinearLayout weatherButtons = new LinearLayout(this); weatherButtons.setPadding(0, dp(18), 0, 0); page.addView(weatherButtons);
                     actionButton(weatherButtons, "Alterar cidade", () -> editCity());
@@ -1161,23 +1323,54 @@ public class MainActivity extends Activity {
                 }
                 case 2: {
                     section(page, "ATALHOS FIXOS", "Organize o dock; para adicionar YouTube, abra Apps e toque ☆");
+                    switchRow(page,"Ícones minimalistas nos aplicativos fixados",minimalIcons,(v,checked)->{
+                        minimalIcons=checked;getPreferences(0).edit().putBoolean("minimal_icons",checked).apply();dashboard.invalidate();
+                    });
                     LinearLayout rows = vertical(); page.addView(rows); populateDockRows(rows);
                     divider(page);
                     page.addView(label("Destinos no Waze (aparecem no dock como Casa e Trabalho)", 14, accent, true));
                     addressRow(page, true, () -> redraw[0].run());
                     addressRow(page, false, () -> redraw[0].run());
                     page.addView(label("Endereço completo ou coordenadas (-23.03,-45.55). O Waze já abre navegando.", 12, cMuted, false));
-                    page.addView(label("\"Último app\": o último aplicativo aberto pelo launcher que ainda não está no dock.", 12, cMuted, false));
+                    page.addView(label("O LED verde identifica o último aplicativo aberto pelo launcher. Não confirma que ainda está executando em segundo plano.", 12, cMuted, false));
                     break;
                 }
                 case 3: {
                     section(page, "VEÍCULO E PAINEL", "Menu do veículo, dados no topo e modo direção");
                     LinearLayout box = page;
                     box.addView(label("CANBUS: " + (hasCanData() ? "CONECTADO" : "NÃO CONECTADO") + "     GPS: " + (gpsFresh() ? "SINAL OK" : "SEM SINAL"), 15, hasCanData() || gpsFresh() ? cOk : cMuted, true));
+                    // Diagnóstico adicional sem modificar nenhum dos cartões ou botões existentes.
+                    divider(box);
+                    box.addView(label("INTEGRAÇÃO JANCAR (SOMENTE LEITURA)", 14, accent, true));
+                    box.addView(label("Conecta ao serviço IVI Car do firmware quando o Android permite. A conexão não significa que valores CAN estejam disponíveis.", 12, cMuted, false));
+                    LinearLayout jancarActions = new LinearLayout(this);
+                    box.addView(jancarActions, new LinearLayout.LayoutParams(-1, dp(54)));
+                    actionButton(jancarActions, "Diagnóstico Jancar", () -> {
+                        if (jancarBridge != null) {
+                            jancarBridge.start();
+                            AlertDialog d = new AlertDialog.Builder(this).setTitle("Jancar • Diagnóstico CAN")
+                                .setMessage(jancarBridge.diagnostic())
+                                .setPositiveButton("Fechar", null)
+                                .setNeutralButton("Atualizar", (di, which) -> {
+                                    new AlertDialog.Builder(this).setTitle("Jancar • Diagnóstico CAN")
+                                        .setMessage(jancarBridge.diagnostic()).setPositiveButton("OK", null).show();
+                                }).show();
+                            handler.postDelayed(() -> { if (d.isShowing()) d.setMessage(jancarBridge.diagnostic()); }, 1000);
+                        }
+                    });
+                    actionButton(jancarActions, "Abrir app do veículo", () -> openJancarApp(true));
+                    actionButton(jancarActions, "Rádio original", () -> openJancarApp(false));
+                    box.addView(label("Rádio e volante continuam pelo sistema original até que os contratos da MCU/CAN sejam confirmados.", 12, cMuted, false));
+                    divider(box);
                     switchRow(box, "Menu do veículo (3 botões + dados na 3ª coluna)", vehicleMenuEnabled, (v, checked) -> {
                         vehicleMenuEnabled = checked; getPreferences(0).edit().putBoolean("vehicle_menu", checked).apply(); refreshGpsNeed();
                     });
                     box.addView(label("Desligado (padrão): relógio/clima e Spotify ocupam a tela inteira, o próprio launcher se ajusta.", 12, cMuted, false));
+                    switchRow(box,"Mostrar acesso ao computador de bordo sem widget",standaloneVehicleButton,(v,checked)->{
+                        standaloneVehicleButton=checked;getPreferences(0).edit().putBoolean("standalone_vehicle_button",checked).apply();dashboard.invalidate();
+                    });
+                    LinearLayout vehicleNav=new LinearLayout(this);box.addView(vehicleNav);
+                    actionButton(vehicleNav,"Selecionar próximo grupo de indicadores",()->{vehicleSelectedPage++;dashboard.invalidate();});
                     divider(box);
                     box.addView(label("Botões do carro (ex.: rádio RT4) — segure o botão na tela para renomear", 14, accent, true));
                     for (int bi = 0; bi < 3; bi++) {
@@ -1229,6 +1422,9 @@ public class MainActivity extends Activity {
                             row.addView(sw, new LinearLayout.LayoutParams(0, dp(44), 1));
                             sw.setOnCheckedChangeListener((v, checked) -> { vehicleVisible[id] = checked; getPreferences(0).edit().putBoolean("vehicle_visible_" + id, checked).apply(); dashboard.invalidate(); });
                         }
+                        if(rowIndex==4) {
+                            grid.addView(label("—  Indicadores adicionais  —",12,cDim,true));
+                        }
                     }
                     break;
                 }
@@ -1275,6 +1471,12 @@ public class MainActivity extends Activity {
                     else actionButton(updateButtons, "Alterar servidor", () -> editServer(() -> redraw[0].run()));
                     switchRow(page, "Verificar automaticamente (a cada 12 h, com internet)", autoUpdate, (v, checked) -> { autoUpdate = checked; getPreferences(0).edit().putBoolean("upd_auto", checked).apply(); });
                     page.addView(label("O repositório precisa ser público, com uma Release que tenha o arquivo .apk (tag como v1.13). O download vem direto do GitHub e a instalação pede sua confirmação no Android.", 12, cMuted, false));
+                    divider(page);
+                    section(page,"DIAGNÓSTICO PARA TESTE NA JANCAR","Confere serviços, permissões e recursos sem alterar dados do veículo");
+                    LinearLayout diagnosticActions = new LinearLayout(this); diagnosticActions.setPadding(0,dp(8),0,0);page.addView(diagnosticActions);
+                    actionButton(diagnosticActions, "Ver relatório", () -> showTestReport());
+                    actionButton(diagnosticActions, "Copiar relatório", () -> copyTestReport());
+                    page.addView(label("Após testar no carro, copie o relatório e envie na conversa. Ele não inclui coordenadas, músicas nem dados pessoais.", 12, cMuted, false));
                     break;
                 }
             }
@@ -1499,7 +1701,7 @@ public class MainActivity extends Activity {
             BluetoothAdapter adapter = BluetoothAdapter.getDefaultAdapter();
             btConnected = adapter != null && adapter.isEnabled() && (adapter.getProfileConnectionState(BluetoothProfile.A2DP) == BluetoothProfile.STATE_CONNECTED || adapter.getProfileConnectionState(BluetoothProfile.HEADSET) == BluetoothProfile.STATE_CONNECTED);
         } catch (Exception e) { btConnected = false; }
-        if (!weatherCity.isEmpty() && netOnline && !weatherLoading && weatherStale() && SystemClock.elapsedRealtime() - lastWeather > 15000) fetchWeather();
+        if ((!weatherCity.isEmpty() || weatherAuto) && netOnline && !weatherLoading && weatherStale() && SystemClock.elapsedRealtime() - lastWeather > 15000) fetchWeather();
     }
     private boolean weatherStale() { return lastWeatherSuccess == 0 || SystemClock.elapsedRealtime() - lastWeatherSuccess > 30 * 60 * 1000L; }
     /** Avisa o launcher no instante em que a rede conecta (a central pode levar ~2 min para subir o Wi-Fi). */
@@ -1517,18 +1719,27 @@ public class MainActivity extends Activity {
     private void onNetworkChanged() {
         boolean was = netOnline;
         refreshConnections();
-        if (netOnline && !weatherCity.isEmpty() && !weatherLoading && (!was || weatherStale() || weatherFailed)) fetchWeather();
+        if (netOnline && (!weatherCity.isEmpty() || weatherAuto) && !weatherLoading && (!was || weatherStale() || weatherFailed)) fetchWeather();
         if (dashboard != null) dashboard.invalidate();
         if (netOnline && !was) handler.postDelayed(this::maybeAutoUpdate, 8000);
     }
 
     // ---------------------------------------------------------------- clima (Open-Meteo; coordenadas em cache)
+    private void tryAutoWeather() {
+        if (!weatherAuto || !netOnline || !gpsFresh() || Double.isNaN(gpsLat) || weatherLoading) return;
+        long now = SystemClock.elapsedRealtime();
+        boolean moved = Double.isNaN(weatherAutoLat) || haversine(gpsLat,gpsLon,weatherAutoLat,weatherAutoLon) > 15000;
+        if ((moved && now - weatherAutoChecked > 60000) || (weatherStale() && now - weatherAutoChecked > 60000)) {
+            weatherAutoLat = gpsLat; weatherAutoLon = gpsLon; weatherAutoChecked = now;
+            fetchWeather();
+        }
+    }
     private static final class WeatherData {
         boolean ok; String line = "", detail = "", condition = "--", high = "--", low = "--", wind = "--", rain = "--", humidity = "--";
         int code = -1, sunrise = -1, sunset = -1;
     }
     private void fetchWeather() {
-        final String city = weatherCity;
+        final String city = weatherAuto ? "Localização atual" : weatherCity;
         if (city.isEmpty()) { weatherLine = "Configure a cidade"; dashboard.invalidate(); return; }
         lastWeather = SystemClock.elapsedRealtime();
         if (weatherLoading) return;
@@ -1538,7 +1749,9 @@ public class MainActivity extends Activity {
             try {
                 SharedPreferences sp = getPreferences(0);
                 double lat, lon; String place = city;
-                if (city.equalsIgnoreCase(sp.getString("geo_city", "")) && sp.contains("geo_lat") && sp.contains("geo_lon")) {
+                if (weatherAuto && !Double.isNaN(weatherAutoLat)) {
+                    lat = weatherAutoLat; lon = weatherAutoLon; place = "Localização atual (GPS)";
+                } else if (city.equalsIgnoreCase(sp.getString("geo_city", "")) && sp.contains("geo_lat") && sp.contains("geo_lon")) {
                     lat = Double.parseDouble(sp.getString("geo_lat", "0")); lon = Double.parseDouble(sp.getString("geo_lon", "0")); place = sp.getString("geo_name", city);
                 } else {
                     JSONObject geo = readJson("https://geocoding-api.open-meteo.com/v1/search?name=" + URLEncoder.encode(city, "UTF-8") + "&count=1&language=pt&format=json");
@@ -1572,8 +1785,8 @@ public class MainActivity extends Activity {
             } catch (Exception ex) { w.ok = false; }
             runOnUiThread(() -> {
                 weatherLoading = false;
-                if (city.equals(weatherCity)) weatherFailed = !w.ok;
-                if (city.equals(weatherCity) && w.ok) {
+                if (city.equals(weatherAuto ? "Localização atual" : weatherCity)) weatherFailed = !w.ok;
+                if (city.equals(weatherAuto ? "Localização atual" : weatherCity) && w.ok) {
                     lastWeatherSuccess = SystemClock.elapsedRealtime();
                     weatherLine = w.line; weatherDetail = w.detail; weatherCondition = w.condition; weatherHigh = w.high; weatherLow = w.low;
                     weatherWind = w.wind; weatherRain = w.rain; weatherHumidity = w.humidity; weatherCode = w.code;
@@ -1844,7 +2057,15 @@ public class MainActivity extends Activity {
             p.reset(); p.setShader(new LinearGradient(0, 0, 0, 720, cBg0, cBg1, Shader.TileMode.CLAMP)); c.drawRect(0, 0, 1280, 720, p); p.setShader(null);
             if (albumBg && Color.alpha(artCur) > 0) drawArtGlow();
             drawHeader(); drawClockWeather();
-            if (vehicleMenuEnabled) { drawMedia(386, 508, false); drawVehicle(); } else drawMedia(386, 862, true);
+            if (vehicleMenuEnabled) { drawMedia(386, 508, false); drawVehicle(); }
+            else {
+                drawMedia(386, 862, true);
+                if (standaloneVehicleButton) {
+                    boolean pr=hit(43,1112,501,115,36);
+                    rr(1112,501,115,36,12,pr?mix(cSurf2,accent,.27f):cSurf2);
+                    tc("PC BORDO",1169,525,13,cText,tfMed);
+                }
+            }
             drawDock(); drawAlertPopup(); drawVolume();
             c.restore();
         }
@@ -1878,16 +2099,17 @@ public class MainActivity extends Activity {
 
         void drawHeader() {
             rr(0, 0, 1280, 72, 0, cHead); ln(0, 72, 1280, 72, cHair, 1.5f);
-            float wm = measure("PEUGEOT", 26, tfBold, .16f), w308 = measure("308", 26, tfBold, 0), gx = 32 + wm + 3;
+            float brandFont=25;
+            while(brandFont>16 && measure(brandTitle,brandFont,tfBold,.025f)>270)brandFont--;
+            float wm = measure(brandTitle, brandFont, tfBold, .025f), w308 = 0, gx = 32 + wm;
             long sm = SystemClock.uptimeMillis() % SHINE_PERIOD; // brilho que corre pelo logo a cada poucos segundos
             float sweep = sm < SHINE_MS ? 10 + (sm / (float) SHINE_MS) * (wm + w308 + 70) : Float.NaN;
-            shineText("PEUGEOT", 32, 47, 26, cText, accent, tfBold, .16f, sweep);
-            shineText("308", gx, 47, 26, accent, 0xffFFFFFF, tfBold, 0, sweep);
+            shineText(brandTitle, 32, 47, brandFont, cText, accent, tfBold, .025f, sweep);
             float dvx = gx + w308 + 14;
             ln(dvx, 22, dvx, 50, cHair, 1.5f);
             drawTopWidget(dvx + 14);
             iconBtn(1, 612, 12, 56, 48, I_MINUS, 22);
-            iconBtn(2, 676, 12, 64, 48, isMuted() ? I_MUTE : I_SPEAKER, 26);
+            iconBtn(2, 676, 12, 64, 48, I_MUTE, 26);
             iconBtn(3, 748, 12, 56, 48, I_PLUS, 22);
             ln(824, 22, 824, 50, cHair, 1.5f);
             noHit = drivingMode; // em movimento os chips viram só indicadores
@@ -1900,7 +2122,7 @@ public class MainActivity extends Activity {
                 text("MODO DIREÇÃO", 1185, 41, 13, cText, tfBold, Paint.Align.CENTER, .04f);
             } else {
                 boolean pr = hit(6, 1122, 12, 126, 48); pushPress(pr, 1122, 12, 126, 48);
-                rr(1122, 12, 126, 48, 14, pr ? mix(cSurf2, accent, .3f) : cSurf2); ic(I_GEAR, 1150, 36, 26, cText); t("Config.", 1174, 43, 18, cText, tfMed); popPress();
+                rr(1122, 14, 126, 44, 13, pr ? mix(cSurf2, accent, .3f) : cSurf2); ic(I_GEAR, 1150, 36, 24, cText); t("Config.", 1174, 42, 17, cText, tfMed); popPress();
             }
         }
 
@@ -1914,10 +2136,10 @@ public class MainActivity extends Activity {
             date = date.substring(0, 1).toUpperCase(br) + date.substring(1);
             tc(date, cx, 240, 20, cMuted, tfReg);
             ln(x + 24, 264, x + w - 24, 264, cHair, 1.5f);
-            boolean hasWx = !weatherCity.isEmpty() && weatherLine.endsWith("°C");
+            boolean hasWx = (weatherAuto || !weatherCity.isEmpty()) && weatherLine.endsWith("°C");
             if (!hasWx) {
                 weatherIcon(3, cx, 372, 84);
-                if (weatherCity.isEmpty()) { tc("Escolha sua cidade", cx, 450, 24, cText, tfMed); tc("Toque para configurar", cx, 482, 17, cMuted, tfReg); }
+                if (weatherCity.isEmpty() && !weatherAuto) { tc("Escolha sua cidade", cx, 450, 24, cText, tfMed); tc("Toque para configurar", cx, 482, 17, cMuted, tfReg); }
                 else { tc(weatherLoading ? "Buscando previsão…" : "Previsão indisponível", cx, 450, 24, cText, tfMed); tc(fit(weatherCity, 17, tfReg, 280) + (weatherLoading ? "" : "  •  toque para tentar"), cx, 482, 17, cMuted, tfReg); }
             } else {
                 boolean offline = !netOnline || weatherFailed;
@@ -1980,6 +2202,12 @@ public class MainActivity extends Activity {
             roundBtn(20, cxc - 124, cyc, 46, I_PREV, 34, cSurf2, cText);
             roundBtn(21, cxc, cyc, 58, mediaPlaying ? I_PAUSE : I_PLAY, 46, accent, onAccent);
             roundBtn(22, cxc + 124, cyc, 46, I_NEXT, 34, cSurf2, cText);
+            // Acesso discreto a letras inseridas pelo usuário, sem fonte não autorizada.
+            if(mediaCtl != null){
+                boolean pr=hit(26,x+w-140,y+70,112,34);
+                rr(x+w-140,y+70,112,34,12,pr?mix(cSurf2,accent,.25f):cSurf2);
+                tc("LETRAS",x+w-84,y+93,14,cText,tfMed);
+            }
             hit(23, x, y, w, h);
         }
 
@@ -1987,6 +2215,7 @@ public class MainActivity extends Activity {
             float x = 918, y = 96, w = 330, h = 456, cx = x + w / 2;
             card(x, y, w, h);
             text("VEÍCULO", x + 24, y + 38, 17, cMuted, tfMed, Paint.Align.LEFT, .1f);
+            if(vehicleMenuEnabled) {hit(43,x+18,y+3,130,46);}
             circle(1112, y + 33, 4.5f, gpsFresh() ? cOk : cDim); t("GPS", 1124, y + 38, 14, cMuted, tfMed);
             circle(1176, y + 33, 4.5f, hasCanData() ? cOk : cDim); t("CAN", 1188, y + 38, 14, cMuted, tfMed);
             // 3 botões do carro em destaque (toque = comando, segurar = renomear)
@@ -2005,16 +2234,19 @@ public class MainActivity extends Activity {
                 String note = (!hasCanData() ? "CANBUS não conectado" : "") + (!hasCanData() && !gpsFresh() ? "  ·  " : "") + (!gpsFresh() ? "GPS sem sinal" : "");
                 tc(note, cx, y + h - 12, 12, faint(), tfReg);
             }
-            String hero = vehicleVisible[0] ? vehicleValue(0) : null;
+            String hero = vehicleVisible[0] ? (vehicleValue(0) == null ? "--" : vehicleValue(0)) : null;
             ArrayList<Integer> others = new ArrayList<>();
-            for (int id = 1; id < vehicleNames.length; id++) if (vehicleVisible[id] && vehicleValue(id) != null) others.add(id);
+            for (int id = 1; id < vehicleNames.length; id++) if (vehicleVisible[id]) others.add(id);
             if (hero == null && others.isEmpty()) {
                 ic(I_NAV, cx, 342, 50, cDim);
                 tc("Aguardando GPS", cx, 410, 22, cText, tfMed);
                 tc("Sem sinal de satélite ou CANBUS", cx, 440, 16, cMuted, tfReg);
                 return;
             }
-            int limit = hero != null ? 4 : 8, n = Math.min(limit, others.size());
+            int limit = hero != null ? 4 : 8;
+            int pageCount=Math.max(1,(others.size()+limit-1)/limit);
+            vehicleSelectedPage%=pageCount;
+            int offset=vehicleSelectedPage*limit, n=Math.min(limit,others.size()-offset);
             boolean roomy = hero != null && n <= 2;
             float top = 228;
             if (hero != null) {
@@ -2035,9 +2267,9 @@ public class MainActivity extends Activity {
             float cellH = Math.min(roomy ? 118 : (hero != null ? 76 : 100), (areaH - (rows - 1) * gap) / rows);
             float total = rows * cellH + (rows - 1) * gap, startY = hero != null ? top : top + (areaH - total) / 2f;
             for (int i = 0; i < n; i++) {
-                int row = i / 2, col = i % 2, inRow = Math.min(2, n - row * 2), id = others.get(i);
+                int row = i / 2, col = i % 2, inRow = Math.min(2, n - row * 2), id = others.get(offset+i);
                 float tw = inRow == 1 ? w - 48 : colW, bx = x + 24 + (inRow == 1 ? 0 : col * (colW + gap)), by = startY + row * (cellH + gap);
-                tile(bx, by, tw, cellH, vehicleShort[id], vehicleValue(id), vehicleUnits[id]);
+                tile(bx, by, tw, cellH, vehicleShort[id], vehicleValue(id)==null?"--":vehicleValue(id), vehicleUnits[id]);
             }
         }
 
@@ -2060,7 +2292,7 @@ public class MainActivity extends Activity {
                 rrs(x, y, w, h, 22, cHair, 1.2f);
                 float cx = x + w / 2, cy = y + 46, ico = Math.min(52, w * .44f);
                 String realPkg = isBuiltin ? (id == 0 ? "com.waze" : id == 2 ? "com.spotify.music" : id == 9 ? pkg : null) : pkg;
-                android.graphics.drawable.Drawable d = realPkg == null ? null : iconOf(realPkg);
+                android.graphics.drawable.Drawable d = (minimalIcons && !isBuiltin && !originalAppIcons.contains(realPkg)) ? null : (realPkg == null ? null : iconOf(realPkg));
                 if (d != null) { int is = (int) ico; d.setBounds((int) cx - is / 2, (int) cy - is / 2, (int) cx + is / 2, (int) cy + is / 2); d.draw(canvas); }
                 else if (isBuiltin) {
                     int[] kinds = {I_NAV, I_RADIO, I_NOTE, I_PHONE, I_BT, I_GRID, I_GEAR, I_HOME, I_WORK, I_GRID};
@@ -2068,7 +2300,7 @@ public class MainActivity extends Activity {
                 } else ic(I_GRID, cx, cy, ico * .9f, accent);
                 float ls = Math.max(13, Math.min(18, w / 8.2f));
                 tc(fit(label, ls, tfMed, w - 14), cx, y + 94, ls, cText, tfMed);
-                if (isBuiltin && id == 9) text("ÚLTIMO", x + w - 10, y + 20, 10, cDim, tfBold, Paint.Align.RIGHT, .06f);
+                if (isBuiltin && id == 9 && pkg != null) circle(x+w-16,y+17,4.5f,cOk);
                 popPress();
             }
         }
@@ -2111,7 +2343,8 @@ public class MainActivity extends Activity {
                 rr(390, 381, 78, 70, 16, cSurf2); rr(812, 381, 78, 70, 16, cSurf2);
                 ic(I_MINUS, 429, 416, 30, cText); ic(I_PLUS, 851, 416, 30, cText);
                 rr(485, 407, 310, 16, 8, cTrack); rr(485, 407, Math.max(16, 310f * v / max), 16, 8, accent);
-                tc("Um nível por toque", 640, 483, 17, cMuted, tfReg);
+                rr(552, 462, 176, 48, 14, cSurf2);ic(I_MUTE,574,486,22,cText);
+                tc("SILENCIAR",655,493,17,cText,tfMed);
             }
         }
 
@@ -2133,6 +2366,7 @@ public class MainActivity extends Activity {
                 case 6: if (!drivingMode) settings(); break;
                 case 7: openEq(); break;
                 case 40: case 41: case 42: vehicleCommand(id - 40); break;
+                case 43: vehicleOptionsMenu(); break;
                 case 20: media(KeyEvent.KEYCODE_MEDIA_PREVIOUS); break;
                 case 21: media(KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE); break;
                 case 22: media(KeyEvent.KEYCODE_MEDIA_NEXT); break;
@@ -2144,7 +2378,8 @@ public class MainActivity extends Activity {
                     }
                     break;
                 case 23: if (!mediaPermission) openNotificationAccess(); else launch(2); break;
-                case 30: if (weatherCity.isEmpty()) editCity(); else fetchWeather(); break;
+                case 26: openLyrics();break;
+                case 30: if (weatherCity.isEmpty() && !weatherAuto) editCity(); else fetchWeather(); break;
                 default: break;
             }
         }
@@ -2165,7 +2400,7 @@ public class MainActivity extends Activity {
                 pressedId = -1;
                 if (act != MotionEvent.ACTION_UP) return true;
                 if (isMuted()) {
-                    if (x >= 345 && x <= 935 && y >= 191 && y <= 526) { feedback(); toggleMute(); }
+                    if (x >= 410 && x <= 870 && y >= 424 && y <= 490) { feedback(); toggleMute(); }
                     return true; // bloqueia a tela enquanto mudo
                 }
                 if (y >= 375 && y <= 460 && x >= 385 && x <= 474) { feedback(); adjustVolume(-1); }
@@ -2176,7 +2411,7 @@ public class MainActivity extends Activity {
                     audio.setStreamVolume(AudioManager.STREAM_MUSIC, value, 0);
                     if (value > 0) { previousVolume = value; volumeVisible = false; invalidate(); } else showVolume();
                     feedback();
-                } else if (y >= 270 && y <= 365 && x >= 520 && x <= 760) { feedback(); toggleMute(); }
+                } else if (y >= 455 && y <= 510 && x >= 550 && x <= 730) { feedback(); toggleMute(); }
                 else { volumeVisible = false; invalidate(); }
                 return true;
             }
@@ -2458,7 +2693,7 @@ public class MainActivity extends Activity {
             hslider(R_FAD, 668, 406, 552, (snd.fader + 10f) / 20f, true);
             t("Reforço de graves", 644, 482, 20, cText, tfMed); tr("+" + Math.round(snd.bass * 10), 1220, 482, 20, accent, tfBold);
             hslider(R_SUB, 668, 516, 552, snd.bass, false);
-            wrap("* O Android não tem comando público de balanço/fader. Os valores ficam salvos e são enviados por broadcast (com.peugeot308.oem.AUDIO_COMMAND); só têm efeito se a central ouvir esse comando. O reforço de graves usa o efeito do Android.", 644, 574, 14, cDim, tfReg, 584, 19);
+            wrap("* Balanço e fader dependem do DSP da Jancar. Nesta versão os valores são apenas guardados e transmitidos por broadcast; NÃO controlam o hardware sem integração OEM. Graves usam equalização Android; avalie com volume moderado.", 644, 574, 14, cDim, tfReg, 584, 19);
         }
 
         // ---------- toque

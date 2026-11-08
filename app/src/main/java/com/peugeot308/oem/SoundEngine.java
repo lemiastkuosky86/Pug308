@@ -252,6 +252,11 @@ final class SoundEngine {
         for (int b = 0; b < n; b++) {
             float lo = edges != null && b < edges.length ? edges[b][0] : 25f, hi = edges != null && b < edges.length ? edges[b][1] : 20000f;
             out[b] = EqMath.bandDb(band, lo, hi, pre + headroom, lowDb, highDb);
+            // Reforço progressivo de graves pela mesma cadeia EQ já testada na central.
+            // Evita o BassBoost nativo que em alguns firmwares inverte a sensação de graves.
+            float mid=(lo+hi)*.5f;
+            if(mid < 190f) out[b] += bass * 5.0f;
+            else if(mid < 350f) out[b] += bass * 1.5f;
         }
         return out;
     }
@@ -265,12 +270,8 @@ final class SoundEngine {
         if (eq != null) {
             try { setLevels(eq, dbs, active); } catch (Exception e) { releaseEffects(); }
         }
-        if (bb != null) {
-            try {
-                if (bb.getStrengthSupported()) bb.setStrength((short) Math.round(EqMath.clamp(bass, 0f, 1f) * 1000f));
-                bb.setEnabled(active && bass > 0.01f);
-            } catch (Exception ignored) {}
-        }
+        // BassBoost separado desativado: o ganho dos graves acima é aplicado pelo EQ.
+        if (bb != null) { try { bb.setEnabled(false); } catch (Exception ignored) {} }
         for (Equalizer e : new ArrayList<>(sessEq.values())) { try { setLevels(e, dbs, active); } catch (Exception ex) { /* sessão morreu */ } }
     }
 
