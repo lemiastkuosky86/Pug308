@@ -1,0 +1,409 @@
+package com.peugeot308.oem;
+
+import android.content.BroadcastReceiver;
+import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
+import android.content.SharedPreferences;
+import android.media.AudioManager;
+import android.media.audiofx.AudioEffect;
+import android.media.audiofx.BassBoost;
+import android.media.audiofx.Equalizer;
+import android.os.Handler;
+import android.os.Looper;
+import android.os.SystemClock;
+
+import java.util.ArrayList;
+import java.util.HashMap;
+
+/**
+ * Motor de som do launcher (v1.14): equalizador de 10 bandas sobre o equalizador do Android,
+ * pré-ganho, loudness dinâmico (acompanha o volume), reforço de graves, volume automático por velocidade
+ * e "campo sonoro". Tudo é salvo em SharedPreferences e reaplicado quando o launcher abre (ao ligar o carro).
+ *
+ * Sobrevive à recriação da Activity (singleton) e re-cria o efeito se o sistema de áudio reiniciar.
+ */
+final class SoundEngine {
+    private static SoundEngine instance;
+    static synchronized SoundEngine get(Context c) {
+        if (instance == null) instance = new SoundEngine(c.getApplicationContext());
+        return instance;
+    }
+
+    private static final String PREFS = "sound";
+    private static final String ACTION_AUDIO_COMMAND = "com.peugeot308.oem.AUDIO_COMMAND";
+
+    private final Context ctx;
+    private final AudioManager audio;
+    private final Handler h = new Handler(Looper.getMainLooper());
+    private final SharedPreferences sp;
+
+    // ---- estado salvo ----
+    boolean on = true;
+    final float[] band = new float[EqMath.N];       // curva atual (dB)
+    float pre = 0f;                                  // pré-ganho (dB)
+    String presetName = "Plano";                     // predefinição ativa ("Usuário" = curva manual)
+    final float[] userBand = new float[EqMath.N];    // última curva manual
+    float userPre = 0f;
+    final ArrayList<String> customNames = new ArrayList<>();
+    final ArrayList<float[]> customBands = new ArrayList<>();
+    final ArrayList<Float> customPre = new ArrayList<>();
+    boolean loudOn = true;
+    float loudAmt = 0.6f;     // 0..1
+    float loudBelow = 0.55f;  // volume (fração) abaixo do qual o loudness age
+    boolean autoVolOn = false;
+    int autoVolMax = 3;       // máximo de níveis somados ao volume do usuário
+    float bass = 0f;          // 0..1 (BassBoost)
+    float balance = 0f, fader = 0f;   // -10..10
+    float padX = -0.45f, padY = -0.35f; // ponto de escuta (-1..1)
+    String fieldName = "Motorista";
+
+    // ---- estado de execução ----
+    boolean compare = false;       // ouvir sem equalização (A/B)
+    private long testUntil = 0;
+    float loudCur = 0f, loudTarget = 0f;
+    float speedKmh = -1f;          // alimentado pela Activity (-1 = desconhecida)
+    boolean volumeBusy = false;    // rampa de volume (fade/mudo) em andamento
+    int autoOffset = 0, baseVol = -1;
+    boolean autoBlocked = false;   // a central ignorou o ajuste de volume feito pelo Android
+    private int autoGate = 0, prevVol = -1, expectVol = -1, prevOffset = 0, ignoredSets = 0;
+    String status = "Iniciando…";
+    boolean effectOk = false;
+    int nBands = 0; float minDb = -15f, maxDb = 15f;
+    private Equalizer eq; private BassBoost bb;
+    private float[][] edges; private long retryAt = 0;
+    private final HashMap<Integer, Equalizer> sessEq = new HashMap<>();
+    private boolean started = false;
+    private BroadcastReceiver sessionReceiver, volumeReceiver;
+
+    private SoundEngine(Context c) {
+        ctx = c;
+        audio = (AudioManager) c.getSystemService(Context.AUDIO_SERVICE);
+        sp = c.getSharedPreferences(PREFS, 0);
+        load();
+    }
+
+    // ------------------------------------------------------------ persistência
+    private static String join(float[] a) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < a.length; i++) { if (i > 0) sb.append(','); sb.append(a[i]); }
+        return sb.toString();
+    }
+    private static boolean parse(String s, float[] out) {
+        try {
+            String[] p = s.split(",");
+            if (p.length != out.length) return false;
+            float[] t = new float[out.length];
+            for (int i = 0; i < t.length; i++) t[i] = EqMath.clamp(Float.parseFloat(p[i].trim()), -EqMath.RANGE, EqMath.RANGE);
+            System.arraycopy(t, 0, out, 0, t.length);
+            return true;
+        } catch (Exception e) { return false; }
+    }
+    private static String cleanName(String n) { return n == null ? "" : n.replaceAll("[|;,\\n\\r]", " ").trim(); }
+
+    private void load() {
+        on = sp.getBoolean("on", true);
+        parse(sp.getString("bands", ""), band);
+        pre = EqMath.clamp(sp.getFloat("pre", 0f), -EqMath.RANGE, EqMath.RANGE);
+        presetName = sp.getString("preset", "Plano");
+        if (!parse(sp.getString("user_bands", ""), userBand)) System.arraycopy(band, 0, userBand, 0, EqMath.N);
+        userPre = EqMath.clamp(sp.getFloat("user_pre", pre), -EqMath.RANGE, EqMath.RANGE);
+        customNames.clear(); customBands.clear(); customPre.clear();
+        for (String e : sp.getString("custom", "").split(";")) {
+            String[] f = e.split("\\|");
+            if (f.length != 3) continue;
+            float[] b = new float[EqMath.N];
+            try { if (parse(f[1], b) && !cleanName(f[0]).isEmpty()) { customNames.add(cleanName(f[0])); customBands.add(b); customPre.add(Float.parseFloat(f[2])); } } catch (Exception ignored) {}
+        }
+        loudOn = sp.getBoolean("loud_on", true);
+        loudAmt = EqMath.clamp(sp.getFloat("loud_amt", 0.6f), 0f, 1f);
+        loudBelow = EqMath.clamp(sp.getFloat("loud_below", 0.55f), 0.15f, 1f);
+        autoVolOn = sp.getBoolean("autovol_on", false);
+        autoVolMax = Math.max(1, Math.min(6, sp.getInt("autovol_max", 3)));
+        bass = EqMath.clamp(sp.getFloat("bass", 0f), 0f, 1f);
+        balance = EqMath.clamp(sp.getFloat("balance", 0f), -10f, 10f);
+        fader = EqMath.clamp(sp.getFloat("fader", 0f), -10f, 10f);
+        padX = EqMath.clamp(sp.getFloat("pad_x", -0.45f), -1f, 1f);
+        padY = EqMath.clamp(sp.getFloat("pad_y", -0.35f), -1f, 1f);
+        fieldName = sp.getString("field", "Motorista");
+    }
+
+    private final Runnable saveTask = this::saveNow;
+    void saveSoon() { h.removeCallbacks(saveTask); h.postDelayed(saveTask, 350); }
+    void saveNow() {
+        h.removeCallbacks(saveTask);
+        StringBuilder cu = new StringBuilder();
+        for (int i = 0; i < customNames.size(); i++) {
+            if (i > 0) cu.append(';');
+            cu.append(customNames.get(i)).append('|').append(join(customBands.get(i))).append('|').append(customPre.get(i));
+        }
+        sp.edit().putBoolean("on", on).putString("bands", join(band)).putFloat("pre", pre).putString("preset", presetName)
+            .putString("user_bands", join(userBand)).putFloat("user_pre", userPre).putString("custom", cu.toString())
+            .putBoolean("loud_on", loudOn).putFloat("loud_amt", loudAmt).putFloat("loud_below", loudBelow)
+            .putBoolean("autovol_on", autoVolOn).putInt("autovol_max", autoVolMax).putFloat("bass", bass)
+            .putFloat("balance", balance).putFloat("fader", fader).putFloat("pad_x", padX).putFloat("pad_y", padY)
+            .putString("field", fieldName).apply();
+    }
+
+    // ------------------------------------------------------------ ciclo de vida
+    /** Inicia (uma vez por processo): cria o efeito, aplica o que estava salvo e começa a acompanhar o volume. */
+    void start() {
+        if (started) { ensureEffect(); applyNow(); return; }
+        started = true;
+        try {
+            sessionReceiver = new BroadcastReceiver() {
+                @Override public void onReceive(Context c, Intent i) {
+                    int s = i.getIntExtra(AudioEffect.EXTRA_AUDIO_SESSION, 0);
+                    if (AudioEffect.ACTION_OPEN_AUDIO_EFFECT_CONTROL_SESSION.equals(i.getAction())) openSession(s);
+                    else closeSession(s);
+                }
+            };
+            IntentFilter f = new IntentFilter(AudioEffect.ACTION_OPEN_AUDIO_EFFECT_CONTROL_SESSION);
+            f.addAction(AudioEffect.ACTION_CLOSE_AUDIO_EFFECT_CONTROL_SESSION);
+            ctx.registerReceiver(sessionReceiver, f);
+        } catch (Exception ignored) {}
+        try {
+            volumeReceiver = new BroadcastReceiver() { @Override public void onReceive(Context c, Intent i) { volumeChanged(); } };
+            ctx.registerReceiver(volumeReceiver, new IntentFilter("android.media.VOLUME_CHANGED_ACTION"));
+        } catch (Exception ignored) {}
+        ensureEffect();
+        applyNow();
+        h.postDelayed(tickTask, 1000);
+    }
+
+    private final Runnable tickTask = new Runnable() {
+        public void run() {
+            try { tick(); } catch (Exception ignored) {}
+            h.postDelayed(this, 1000);
+        }
+    };
+
+    private void tick() {
+        ensureEffect();
+        volumeChanged();
+        autoVolumeStep();
+        // saúde do efeito: se o sistema de áudio reiniciou, o efeito some; recria e reaplica
+        if (eq != null) { try { eq.getEnabled(); } catch (Exception e) { releaseEffects(); ensureEffect(); applyNow(); } }
+    }
+
+    // ------------------------------------------------------------ efeitos
+    private void releaseEffects() {
+        try { if (eq != null) eq.release(); } catch (Exception ignored) {}
+        try { if (bb != null) bb.release(); } catch (Exception ignored) {}
+        eq = null; bb = null; effectOk = false;
+    }
+
+    private void ensureEffect() {
+        if (eq != null) return;
+        long now = SystemClock.elapsedRealtime();
+        if (now < retryAt) return;
+        try {
+            Equalizer e = new Equalizer(0, 0); // sessão 0 = mistura global de saída
+            int n = e.getNumberOfBands();
+            short[] r = e.getBandLevelRange();
+            float[] centers = new float[n];
+            float[][] ed = new float[n][2]; boolean edOk = true;
+            for (short b = 0; b < n; b++) {
+                centers[b] = e.getCenterFreq(b) / 1000f;
+                int[] fr = e.getBandFreqRange(b);
+                ed[b][0] = fr[0] / 1000f; ed[b][1] = fr[1] / 1000f;
+                if (ed[b][1] <= ed[b][0] || ed[b][1] <= 0) edOk = false;
+            }
+            edges = edOk ? ed : EqMath.edgesFromCenters(centers);
+            nBands = n; minDb = r[0] / 100f; maxDb = r[1] / 100f;
+            eq = e; effectOk = true;
+            status = "Equalizador do Android ativo (efeito global) • " + n + " bandas • ±" + Math.round(maxDb) + " dB";
+        } catch (Throwable t) {
+            eq = null; effectOk = false; retryAt = now + 20000;
+            status = sessEq.isEmpty() ? "Efeito global indisponível nesta central (" + t.getClass().getSimpleName() + ")" : "Ativo por aplicativo (" + sessEq.size() + ")";
+        }
+        try { // BassBoost é opcional; se faltar, só o equalizador funciona
+            if (bb == null && eq != null) bb = new BassBoost(0, 0);
+        } catch (Throwable t) { bb = null; }
+    }
+
+    private void openSession(int s) {
+        if (s <= 0 || effectOk || sessEq.containsKey(s)) return; // só se o efeito global não funcionou
+        try { Equalizer e = new Equalizer(0, s); sessEq.put(s, e); if (nBands == 0) { nBands = e.getNumberOfBands(); } applyNow(); status = "Ativo por aplicativo (" + sessEq.size() + ")"; } catch (Throwable ignored) {}
+    }
+    private void closeSession(int s) { Equalizer e = sessEq.remove(s); if (e != null) try { e.release(); } catch (Exception ignored) {} }
+
+    private void setLevels(Equalizer e, float[] dbs, boolean active) throws Exception {
+        if (!active) { e.setEnabled(false); return; }
+        short lo = e.getBandLevelRange()[0], hi = e.getBandLevelRange()[1];
+        for (short b = 0; b < dbs.length && b < e.getNumberOfBands(); b++) {
+            int mb = Math.round(dbs[b] * 100f);
+            e.setBandLevel(b, (short) Math.max(lo, Math.min(hi, mb)));
+        }
+        e.setEnabled(true);
+    }
+
+    /** Níveis finais (dB) por faixa real do Android: curva + pré + loudness. */
+    float[] targetLevels() {
+        int n = Math.max(1, nBands);
+        float[] out = new float[n];
+        if (testUntil > SystemClock.elapsedRealtime()) { // teste: graves +9 dB e agudos −9 dB, bem audível sem exagerar
+            for (int b = 0; b < n; b++) out[b] = b < (n + 1) / 2 ? Math.min(maxDb, 9f) : Math.max(minDb, -9f);
+            return out;
+        }
+        float k = loudOn ? loudCur * loudAmt : 0f;
+        float lowDb = k * EqMath.LOUD_LOW_DB, highDb = k * EqMath.LOUD_HIGH_DB;
+        float headroom = -0.25f * Math.max(lowDb, highDb); // com volume baixo sobra margem; só um pouco de folga
+        for (int b = 0; b < n; b++) {
+            float lo = edges != null && b < edges.length ? edges[b][0] : 25f, hi = edges != null && b < edges.length ? edges[b][1] : 20000f;
+            out[b] = EqMath.bandDb(band, lo, hi, pre + headroom, lowDb, highDb);
+        }
+        return out;
+    }
+
+    void applyNow() {
+        ensureEffect();
+        boolean active = on && !compare;
+        float[] dbs = targetLevels();
+        boolean testing = testUntil > SystemClock.elapsedRealtime();
+        if (testing) active = true;
+        if (eq != null) {
+            try { setLevels(eq, dbs, active); } catch (Exception e) { releaseEffects(); }
+        }
+        if (bb != null) {
+            try {
+                if (bb.getStrengthSupported()) bb.setStrength((short) Math.round(EqMath.clamp(bass, 0f, 1f) * 1000f));
+                bb.setEnabled(active && bass > 0.01f);
+            } catch (Exception ignored) {}
+        }
+        for (Equalizer e : new ArrayList<>(sessEq.values())) { try { setLevels(e, dbs, active); } catch (Exception ex) { /* sessão morreu */ } }
+    }
+
+    /** Teste audível de 4 s: se o som não mudar, a central não aceita efeitos do Android. */
+    void testEffect() {
+        testUntil = SystemClock.elapsedRealtime() + 4000;
+        applyNow();
+        h.postDelayed(this::applyNow, 4100);
+    }
+
+    // ------------------------------------------------------------ loudness dinâmico
+    float volumeFraction() {
+        try {
+            int max = Math.max(1, audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC));
+            return audio.getStreamVolume(AudioManager.STREAM_MUSIC) / (float) max;
+        } catch (Exception e) { return 1f; }
+    }
+
+    void volumeChanged() {
+        float vf = volumeFraction();
+        loudTarget = (loudOn && vf > 0f) ? EqMath.loudFactor(vf, loudBelow) : 0f;
+        if (Math.abs(loudTarget - loudCur) > 0.002f) { h.removeCallbacks(smoothTask); h.post(smoothTask); }
+    }
+    private final Runnable smoothTask = new Runnable() {
+        public void run() {
+            float d = loudTarget - loudCur;
+            loudCur += Math.max(-0.04f, Math.min(0.04f, d)); // passos curtos: sem estalo nem salto audível
+            applyNow();
+            if (Math.abs(loudTarget - loudCur) > 0.002f) h.postDelayed(this, 70);
+        }
+    };
+
+    // ------------------------------------------------------------ volume automático por velocidade
+    /** Nível extra desejado (contínuo) para a velocidade: 0 até 40 km/h, máximo a partir de 110 km/h. */
+    float autoWanted() {
+        if (speedKmh < 0f) return 0f;
+        float t = EqMath.clamp((speedKmh - 40f) / 70f, 0f, 1f);
+        return autoVolMax * (t * t * (3f - 2f * t));
+    }
+
+    private void autoVolumeStep() {
+        try {
+            int cur = audio.getStreamVolume(AudioManager.STREAM_MUSIC), max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC);
+            if (cur == 0 || volumeBusy) { autoOffset = 0; baseVol = cur; expectVol = -1; return; } // mudo ou fade: não mexe
+            if (expectVol >= 0 && cur != expectVol && cur == prevVol) { // o Android ignorou o nosso ajuste: desfaz e desiste depois de 3 vezes
+                autoOffset = prevOffset; expectVol = -1;
+                if (++ignoredSets >= 3) autoBlocked = true;
+                return;
+            }
+            expectVol = -1;
+            if (baseVol < 0 || cur != baseVol + autoOffset) { // o usuário mexeu no volume: passa a ser a nova referência
+                int nb = cur - autoOffset;
+                if (nb < 1) { autoOffset = 0; nb = cur; }
+                baseVol = nb;
+            }
+            if (autoBlocked) return;
+            int want = autoVolOn ? Math.round(autoWanted()) : 0;
+            want = Math.max(0, Math.min(want, max - baseVol));
+            if (autoOffset == want) { autoGate = 0; return; }
+            if (++autoGate < 2) return; // um nível a cada ~2 s: subida/descida bem gradual
+            autoGate = 0;
+            prevVol = cur; prevOffset = autoOffset;
+            autoOffset += want > autoOffset ? 1 : -1;
+            expectVol = baseVol + autoOffset;
+            audio.setStreamVolume(AudioManager.STREAM_MUSIC, expectVol, 0);
+        } catch (Exception ignored) {}
+    }
+
+    // ------------------------------------------------------------ ações da tela
+    void changed() { applyNow(); saveSoon(); }
+
+    private void markUser() {
+        presetName = "Usuário";
+        System.arraycopy(band, 0, userBand, 0, EqMath.N); userPre = pre;
+    }
+    void setBand(int i, float v) { band[i] = EqMath.snap(v); markUser(); changed(); }
+    void setPre(float v) { pre = EqMath.snap(v); markUser(); changed(); }
+    void setOn(boolean v) { on = v; changed(); }
+    void reset() { java.util.Arrays.fill(band, 0f); pre = 0f; presetName = "Plano"; changed(); }
+    void applyPreset(String name) {
+        if ("Usuário".equals(name)) { System.arraycopy(userBand, 0, band, 0, EqMath.N); pre = userPre; presetName = name; changed(); return; }
+        for (int i = 0; i < EqMath.PRESET_NAMES.length; i++) if (EqMath.PRESET_NAMES[i].equals(name)) {
+            System.arraycopy(EqMath.PRESETS[i], 0, band, 0, EqMath.N); pre = EqMath.autoPre(band); presetName = name; changed(); return;
+        }
+        int c = customNames.indexOf(name);
+        if (c >= 0) { System.arraycopy(customBands.get(c), 0, band, 0, EqMath.N); pre = customPre.get(c); presetName = name; changed(); }
+    }
+    boolean isCustom(String name) { return customNames.contains(name); }
+    /** Salva a curva atual como predefinição própria (se o nome já existe, substitui). */
+    void saveCustom(String rawName) {
+        String n = cleanName(rawName);
+        if (n.isEmpty()) return;
+        if (n.length() > 14) n = n.substring(0, 14).trim();
+        for (String b : EqMath.PRESET_NAMES) if (b.equalsIgnoreCase(n)) n = n + " 2";
+        if ("Usuário".equalsIgnoreCase(n)) n = "Meu ajuste";
+        int idx = customNames.indexOf(n);
+        if (idx >= 0) { customBands.set(idx, band.clone()); customPre.set(idx, pre); }
+        else { if (customNames.size() >= 12) { customNames.remove(0); customBands.remove(0); customPre.remove(0); } customNames.add(n); customBands.add(band.clone()); customPre.add(pre); }
+        presetName = n; saveNow();
+    }
+    void deleteCustom(String name) {
+        int i = customNames.indexOf(name);
+        if (i < 0) return;
+        customNames.remove(i); customBands.remove(i); customPre.remove(i);
+        if (name.equals(presetName)) presetName = "Usuário";
+        saveNow();
+    }
+    void setLoudOn(boolean v) { loudOn = v; volumeChanged(); changed(); }
+    void setLoudAmt(float v) { loudAmt = EqMath.clamp(v, 0f, 1f); changed(); }
+    void setLoudBelow(float v) { loudBelow = EqMath.clamp(v, 0.15f, 1f); volumeChanged(); changed(); }
+    void setAutoVol(boolean v) { autoVolOn = v; if (v) { autoBlocked = false; ignoredSets = 0; } saveSoon(); }
+    void setAutoVolMax(int v) { autoVolMax = Math.max(1, Math.min(6, v)); saveSoon(); }
+    void setBass(float v) { bass = EqMath.clamp(v, 0f, 1f); changed(); }
+
+    // campo sonoro: o Android não tem API pública de balanço/fader; os valores ficam salvos e são enviados por broadcast
+    void setField(float x, float y, String name) {
+        padX = EqMath.clamp(x, -1f, 1f); padY = EqMath.clamp(y, -1f, 1f); fieldName = name == null ? "Personalizado" : name;
+        balance = Math.round(padX * 10f); fader = Math.round(-padY * 10f); sendField(); saveSoon();
+    }
+    void setBalance(float v) { balance = Math.round(EqMath.clamp(v, -10f, 10f)); padX = balance / 10f; fieldName = "Personalizado"; sendField(); saveSoon(); }
+    void setFader(float v) { fader = Math.round(EqMath.clamp(v, -10f, 10f)); padY = -fader / 10f; fieldName = "Personalizado"; sendField(); saveSoon(); }
+    private long lastField = 0;
+    private void sendField() {
+        long now = SystemClock.uptimeMillis();
+        if (now - lastField < 150) return; lastField = now;
+        try {
+            Intent i = new Intent(ACTION_AUDIO_COMMAND).putExtra("balance", (int) balance).putExtra("fader", (int) fader)
+                .putExtra("bass", Math.round(bass * 10f)).putExtra("x", padX).putExtra("y", padY);
+            ctx.sendBroadcast(i);
+        } catch (Exception ignored) {}
+    }
+
+    /** Linha de diagnóstico para a tela. */
+    String statusLine() { return status; }
+    boolean testing() { return testUntil > SystemClock.elapsedRealtime(); }
+}

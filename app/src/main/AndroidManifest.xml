@@ -1,0 +1,24 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+ <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS"/>
+ <uses-permission android:name="android.permission.INTERNET"/>
+ <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
+ <uses-permission android:name="android.permission.BLUETOOTH"/>
+ <uses-permission android:name="android.permission.BLUETOOTH_CONNECT"/>
+ <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
+ <queries><intent><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent></queries>
+ <uses-permission android:name="android.permission.DOWNLOAD_WITHOUT_NOTIFICATION"/>
+ <uses-permission android:name="android.permission.WRITE_SETTINGS"/>
+ <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
+ <application android:label="Peugeot 308 OEM" android:theme="@android:style/Theme.Material.NoActionBar" android:usesCleartextTraffic="true">
+  <activity android:name=".MainActivity" android:exported="true" android:screenOrientation="landscape">
+   <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
+   <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.HOME"/><category android:name="android.intent.category.DEFAULT"/></intent-filter>
+  </activity>
+  <service android:name=".SpotifyNotificationListener"
+   android:label="Peugeot 308 - Spotify"
+   android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"
+   android:exported="true">
+   <intent-filter><action android:name="android.service.notification.NotificationListenerService"/></intent-filter>
+  </service>
+ </application>
+</manifest>
