@@ -25,6 +25,12 @@ public final class RadarStore {
     private final ArrayList<Point> imported=new ArrayList<>(), online=new ArrayList<>();
     private final HashMap<Long,ArrayList<Point>> bins=new HashMap<>();
     public synchronized int personalCount(){return imported.size();}
+    /** Contagem por categoria apenas de pontos offline importados (não soma o OSM). */
+    public synchronized int[] personalCounts(){
+        int[] counts=new int[COUNT];
+        for(Point p:imported)if(p.type>=0&&p.type<COUNT)counts[p.type]++;
+        return counts;
+    }
     public synchronized int onlineCount(){return online.size();}
     public synchronized int count(int type){int n=0;for(Point p:imported)if(p.type==type)n++;for(Point p:online)if(p.type==type)n++;return n;}
     private static long cellKey(int la,int lo){return (((long)la)<<32) ^ (lo&0xffffffffL);}

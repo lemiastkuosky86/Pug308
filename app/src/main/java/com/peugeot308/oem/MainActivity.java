@@ -24,9 +24,11 @@ import android.view.*;
 import android.widget.*;
 import java.text.*;
 import java.util.*;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /**
- * Peugeot 308 OEM Launcher v1.32
+ * Peugeot 308 OEM Launcher v1.36
  * - Visual "concessionária": superfícies planas, ícones vetoriais, tipografia em hierarquia
  * - Tema automático dia/noite (nascer/pôr do sol), escuro ou claro
  * - Estados de toque, escala uniforme (sem distorcer), cache de ícones, aceleração por hardware
@@ -59,13 +61,46 @@ public class MainActivity extends Activity {
     private long radarLastSuccessfulAt = 0;
     private int radarCount = 0;
     private Bitmap albumArt;
+    // Cache privado e pequeno: apenas a última capa do Spotify, sem download de imagens.
+    private Bitmap lastSpotifyArt;
+    private boolean lastSpotifyQueuedHasArt = false;
+    private String lastSpotifyTitle = "", lastSpotifyArtist = "", lastSpotifyQueued = "";
+    private boolean cachedSpotifyPreview = false;
+    private final ExecutorService spotifyCacheWorker = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "PugSpotifyCache");
+        t.setDaemon(true);
+        return t;
+    });
+    private boolean firstResume = true;
+    private int lastMinuteRendered = -1;
+
     private boolean mediaPlaying = false, mediaIsSpotify = true, mediaPermission = false;
     private long songDuration = 0, songPosBase = 0, songPosStamp = 0;
     private float songSpeed = 1f;
+    // Atualizações leves, direcionadas à sessão já selecionada: não pesquisa todas
+    // as sessões a cada troca de música. O Spotify fornece os eventos diretamente.
     private final MediaController.Callback mediaCallback = new MediaController.Callback() {
-        @Override public void onMetadataChanged(MediaMetadata m) { runOnUiThread(() -> updateMedia()); }
-        @Override public void onPlaybackStateChanged(PlaybackState st) { runOnUiThread(() -> updateMedia()); }
+        @Override public void onMetadataChanged(MediaMetadata m) {
+            handler.post(() -> {
+                if (mediaCtl != null) {
+                    try { applyCurrentMedia(mediaCtl, m, mediaCtl.getPlaybackState()); }
+                    catch (Exception ignored) { updateMedia(); }
+                }
+            });
+        }
+        @Override public void onPlaybackStateChanged(PlaybackState st) {
+            handler.post(() -> {
+                if (mediaCtl != null) {
+                    try { applyCurrentMedia(mediaCtl, mediaCtl.getMetadata(), st); }
+                    catch (Exception ignored) { updateMedia(); }
+                }
+            });
+        }
+        @Override public void onSessionDestroyed() { handler.post(() -> updateMedia()); }
     };
+    private final MediaSessionManager.OnActiveSessionsChangedListener mediaSessionsChanged =
+            controllers -> handler.post(() -> updateMedia());
+    private boolean mediaSessionObserverRegistered = false;
 
     private Dashboard dashboard;
     private JancarBridge jancarBridge;
@@ -105,6 +140,13 @@ public class MainActivity extends Activity {
     private String artKey = "";
     private boolean autoBrightness = true;
     private int brightDay = 100, brightNight = 40;
+    // v1.35: 0=automático dia/noite; 1=mínimo; 2=máximo; 3=manual.
+    // Os limites de brilho nunca chegam a zero para que o display continue utilizável.
+    private static final int BRIGHT_AUTO = 0, BRIGHT_MIN = 1, BRIGHT_MAX = 2, BRIGHT_MANUAL = 3;
+    private int brightnessMode = BRIGHT_AUTO, manualBrightness = 60;
+    private boolean topBrightnessVisible = false; // opt-in para respeitar 4 atalhos + Config
+    private int appliedBrightnessPct = -1;
+
     private boolean fadeBoot = true, fadePending = false, wasPlaying = false;
     private long fadeWindowUntil = 0, screenOffAt = 0;
     private static boolean bootArmed = false;
@@ -143,6 +185,7 @@ public class MainActivity extends Activity {
     private boolean radarFetching = false;
     private final HashMap<Long, Long> radarAlerted = new HashMap<>();
     private static final long SHINE_PERIOD = 3200L, SHINE_MS = 850L;
+    private static final long SPEED_ALERT_DURATION_MS = 7000L; // v1.33: 4 s antigos + 3 s solicitados
     private static final float SET_SCALE = 1.5f; // tamanho dos menus de configuração
     private boolean speedAlert = false;
     private int speedLimit = 110;
@@ -335,6 +378,18 @@ public class MainActivity extends Activity {
     private float speedNow() { String sv = vehicleValue(0); if (sv == null) return -1; try { return Float.parseFloat(sv); } catch (Exception e) { return -1; } }
 
     // ---- Clima ----
+    private long clockTextMinute = Long.MIN_VALUE;
+    private String clockText = "--:--", clockDateText = "";
+    private void refreshClockText() {
+        long minute = System.currentTimeMillis() / 60000L;
+        if (minute == clockTextMinute) return;
+        clockTextMinute = minute;
+        Date d = new Date();
+        clockText = new SimpleDateFormat("HH:mm", Locale.getDefault()).format(d);
+        Locale br = new Locale("pt", "BR");
+        String day = new SimpleDateFormat("EEEE, d 'de' MMMM", br).format(d);
+        clockDateText = day.isEmpty() ? "" : day.substring(0, 1).toUpperCase(br) + day.substring(1);
+    }
     private String weatherCity = "", weatherLine = "Configure a cidade", weatherDetail = "";
     private boolean weatherAuto = false;
     private double weatherAutoLat = Double.NaN, weatherAutoLon = Double.NaN;
@@ -372,11 +427,24 @@ public class MainActivity extends Activity {
             pushSoundState();
             checkAlerts();
             if (computeNight() != night) applyTheme();
-            if (tickCount % 3 == 0) { refreshConnections(); updateMedia(); }
+            // Brilho, rede e sessão são checados em cadências independentes.
+            if (brightnessMode == BRIGHT_AUTO && tickCount % 60 == 0) applyBrightness();
+            if (tickCount % 3 == 0) refreshConnections();
+            if (tickCount % 15 == 0) updateMedia();
             if (tickCount % 600 == 599) maybeAutoUpdate();
             tickCount++;
-            if (dashboard != null) dashboard.invalidate();
-            handler.postDelayed(this, 1000);
+            if (dashboard != null && dashboard.getWindowToken() != null && !isFinishing()) {
+                Calendar now = Calendar.getInstance();
+                int currentMinute = now.get(Calendar.HOUR_OF_DAY) * 60 + now.get(Calendar.MINUTE);
+                boolean minuteChanged = lastMinuteRendered != currentMinute;
+                lastMinuteRendered = currentMinute;
+                boolean shouldCollapse = immersiveIdle && !drivingMode && !lastHomeIdleTarget &&
+                        SystemClock.uptimeMillis() - lastHomeInteraction >= HOME_IDLE_MS;
+                if (minuteChanged || shouldCollapse) dashboard.invalidate();
+                else if (mediaPlaying && songDuration > 0) dashboard.invalidateMediaProgress();
+                // GPS, rede, mídia, animações e alertas invalidam apenas quando mudam.
+            }
+            handler.postDelayed(this, 1000L);
         }
     };
 
@@ -384,6 +452,9 @@ public class MainActivity extends Activity {
     private boolean computeNight() {
         if (themeMode == 1) return true;
         if (themeMode == 2) return false;
+        return isNightByClock();
+    }
+    private boolean isNightByClock() {
         Calendar c = Calendar.getInstance();
         int now = c.get(Calendar.HOUR_OF_DAY) * 60 + c.get(Calendar.MINUTE);
         if (sunriseMin >= 0 && sunsetMin >= 0) return now < sunriseMin || now >= sunsetMin;
@@ -438,20 +509,102 @@ public class MainActivity extends Activity {
         getPreferences(0).edit().putInt("theme2", presetIndex).apply();
         applyTheme();
     }
-    /** Brilho automático: dia/noite. Na janela do launcher sempre; no sistema só se o Android permitir (WRITE_SETTINGS). */
+    private static int safeBrightness(int percent) { return Math.max(5, Math.min(100, percent)); }
+    private int brightnessPercent() {
+        switch (brightnessMode) {
+            case BRIGHT_MIN: return safeBrightness(brightNight);
+            case BRIGHT_MAX: return safeBrightness(brightDay);
+            case BRIGHT_MANUAL: return safeBrightness(manualBrightness);
+            default: return safeBrightness(isNightByClock() ? brightNight : brightDay);
+        }
+    }
+    private String brightnessModeName() {
+        switch (brightnessMode) {
+            case BRIGHT_MIN: return "Mínimo";
+            case BRIGHT_MAX: return "Máximo";
+            case BRIGHT_MANUAL: return "Manual";
+            default: return "Automático";
+        }
+    }
+    private void saveBrightnessMode(int mode) {
+        brightnessMode = Math.max(BRIGHT_AUTO, Math.min(BRIGHT_MANUAL, mode));
+        autoBrightness = brightnessMode == BRIGHT_AUTO;
+        getPreferences(0).edit().putInt("brightness_mode", brightnessMode)
+                .putBoolean("auto_bright", autoBrightness).apply();
+        appliedBrightnessPct = -1;
+        applyBrightness();
+        if (dashboard != null) dashboard.invalidateHeader();
+    }
+    private void cycleBrightness() {
+        // Toque simples alterna os três presets. Manual só é selecionado pelo slider.
+        if (brightnessMode == BRIGHT_AUTO) saveBrightnessMode(BRIGHT_MIN);
+        else if (brightnessMode == BRIGHT_MIN) saveBrightnessMode(BRIGHT_MAX);
+        else saveBrightnessMode(BRIGHT_AUTO);
+        snack("Brilho: " + brightnessModeName() + " (" + brightnessPercent() + "%)");
+    }
+    /** A janela funciona sem permissão. O brilho global só é tentado se WRITE_SETTINGS existir. */
     private void applyBrightness() {
         try {
+            int pct = brightnessPercent();
+            if (pct == appliedBrightnessPct) return; // evita regravar Settings a cada redesenho
             WindowManager.LayoutParams lp = getWindow().getAttributes();
-            if (autoBrightness) {
-                int pct = Math.max(5, Math.min(100, night ? brightNight : brightDay));
-                lp.screenBrightness = pct / 100f;
-                if (Settings.System.canWrite(this)) {
-                    Settings.System.putInt(getContentResolver(), Settings.System.SCREEN_BRIGHTNESS_MODE, Settings.System.SCREEN_BRIGHTNESS_MODE_MANUAL);
-                    Settings.System.putInt(getContentResolver(), Settings.System.SCREEN_BRIGHTNESS, Math.max(13, pct * 255 / 100));
-                }
-            } else lp.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE;
+            lp.screenBrightness = pct / 100f;
             getWindow().setAttributes(lp);
-        } catch (Exception ignored) {}
+            if (Settings.System.canWrite(this)) {
+                Settings.System.putInt(getContentResolver(), Settings.System.SCREEN_BRIGHTNESS_MODE, Settings.System.SCREEN_BRIGHTNESS_MODE_MANUAL);
+                Settings.System.putInt(getContentResolver(), Settings.System.SCREEN_BRIGHTNESS, Math.max(13, Math.round(pct * 255f / 100f)));
+            }
+            appliedBrightnessPct = pct;
+        } catch (Exception ignored) { appliedBrightnessPct = -1; }
+    }
+    private void openBrightnessQuickMenu() {
+        if (drivingMode) { snack("Ajuste detalhado de brilho disponível com o carro parado"); return; }
+        quickPanel("BRILHO • CONTROLE RÁPIDO", root -> {
+            section(root, "PERFIS", "Toque rápido no botão superior para alternar entre Auto, Mínimo e Máximo");
+            choiceRow(root, "Modo de brilho", new String[]{"Automático (dia/noite)", "Mínimo", "Máximo", "Manual"},
+                    brightnessMode, mode -> { saveBrightnessMode(mode); dismissQuick(); openBrightnessQuickMenu(); });
+            divider(root);
+            TextView level = label("Brilho: " + brightnessPercent() + "% • " + brightnessModeName(), 18, cText, true);
+            root.addView(level);
+            SeekBar seek = new SeekBar(this);
+            seek.setMax(95); // de 5% até 100%; nunca apaga completamente a tela
+            seek.setProgress(safeBrightness(manualBrightness) - 5);
+            root.addView(seek, new LinearLayout.LayoutParams(-1, dp(66)));
+            seek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+                @Override public void onProgressChanged(SeekBar bar, int progress, boolean fromUser) {
+                    if (!fromUser) return;
+                    manualBrightness = safeBrightness(progress + 5);
+                    getPreferences(0).edit().putInt("brightness_manual", manualBrightness).apply();
+                    if (brightnessMode != BRIGHT_MANUAL) saveBrightnessMode(BRIGHT_MANUAL);
+                    else { appliedBrightnessPct = -1; applyBrightness(); }
+                    level.setText("Brilho: " + brightnessPercent() + "% • Manual");
+                }
+                @Override public void onStartTrackingTouch(SeekBar bar) {}
+                @Override public void onStopTrackingTouch(SeekBar bar) {}
+            });
+            root.addView(label("Arrastar seleciona Manual. No automático, alterna entre os valores de dia e noite.", 13, cMuted, false));
+            divider(root);
+            stepperRow(root, "Brilho mínimo", brightNight, 5, 95, 5, "%", val -> {
+                brightNight = val; if (brightDay < val) brightDay = val;
+                getPreferences(0).edit().putInt("bright_night", brightNight).putInt("bright_day", brightDay).apply();
+                appliedBrightnessPct = -1; applyBrightness();
+                level.setText("Brilho: " + brightnessPercent() + "% • " + brightnessModeName());
+            });
+            stepperRow(root, "Brilho máximo", brightDay, 10, 100, 5, "%", val -> {
+                brightDay = Math.max(val, brightNight);
+                getPreferences(0).edit().putInt("bright_day", brightDay).apply();
+                appliedBrightnessPct = -1; applyBrightness();
+                level.setText("Brilho: " + brightnessPercent() + "% • " + brightnessModeName());
+            });
+            root.addView(label("Ajuste da iluminação dentro do launcher. O brilho geral da Jancar só muda se o Android permitir.",12,cMuted,false));
+            if (!Settings.System.canWrite(this)) {
+                LinearLayout perms = new LinearLayout(this); root.addView(perms);
+                actionButton(perms,"Permissão de brilho do sistema",() -> {
+                    try { startActivity(new Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS, Uri.parse("package:" + getPackageName()))); }
+                    catch (Exception e) { snack("Esta central não permite configurar a permissão"); }
+                });
+            }
+        });
     }
     private void setThemeMode(int mode) {
         themeMode = mode;
@@ -469,14 +622,18 @@ public class MainActivity extends Activity {
         getWindow().getDecorView().setSystemUiVisibility(5894 | View.SYSTEM_UI_FLAG_LAYOUT_STABLE | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION);
         audio = (AudioManager) getSystemService(AUDIO_SERVICE);
         setVolumeControlStream(AudioManager.STREAM_MUSIC);
-        snd = SoundEngine.get(this); snd.start(); // reaplica o equalizador salvo ao ligar o carro
+        snd = SoundEngine.get(this); // inicializa o efeito depois que a primeira tela for exibida
         SharedPreferences prefs = getPreferences(0);
         presetIndex = Math.max(0, Math.min(PRESET_NAMES.length - 1, prefs.getInt("theme2", 0))); // padrão: Peugeot Âmbar (preto + âmbar)
         accentBase = PRESET_ACCENTS[presetIndex];
         albumBg = prefs.getBoolean("album_bg", true);
         autoBrightness = prefs.getBoolean("auto_bright", true);
+        brightnessMode = Math.max(BRIGHT_AUTO, Math.min(BRIGHT_MANUAL,
+                prefs.getInt("brightness_mode", autoBrightness ? BRIGHT_AUTO : BRIGHT_MANUAL)));
+        autoBrightness = brightnessMode == BRIGHT_AUTO;
         brightDay = Math.max(10, Math.min(100, prefs.getInt("bright_day", 100)));
-        brightNight = Math.max(5, Math.min(100, prefs.getInt("bright_night", 40)));
+        brightNight = Math.max(5, Math.min(brightDay, prefs.getInt("bright_night", 40)));
+        manualBrightness = safeBrightness(prefs.getInt("brightness_manual", 60));
         fadeBoot = prefs.getBoolean("fade_boot", true);
         drivingEnabled = prefs.getBoolean("driving_mode", true);
         drivingThreshold = Math.max(5, Math.min(60, prefs.getInt("driving_kmh", 10)));
@@ -516,6 +673,8 @@ public class MainActivity extends Activity {
         topWidgetEnabled = prefs.getBoolean("top_widget", true);
         topBtVisible = prefs.getBoolean("top_show_bt", true);
         topWifiVisible = prefs.getBoolean("top_show_wifi", true);
+        // Opcional: os quatro atalhos existentes não devem desaparecer numa atualização.
+        topBrightnessVisible = prefs.getBoolean("top_show_brightness", false);
         wifiAutoOn = prefs.getBoolean("wifi_auto_on", false);
         wifiAutoStatus = prefs.getString("wifi_auto_status", "Ainda não testado");
         topRadarVisible = prefs.getBoolean("top_show_radar", true);
@@ -546,8 +705,12 @@ public class MainActivity extends Activity {
         standaloneVehicleButton = prefs.getBoolean("standalone_vehicle_button", true);
         applyTheme();
         dashboard = new Dashboard();
+        // Mostra a Home logo; serviços OEM e disco não devem atrasar a primeira renderização.
+        setContentView(dashboard);
+        restoreLastSpotifyPreview();
         jancarBridge = new JancarBridge(this, () -> handler.post(() -> { if (dashboard != null) dashboard.invalidate(); }));
-        jancarBridge.start();
+        handler.postDelayed(() -> { if (!isFinishing() && jancarBridge != null) jancarBridge.start(); }, 300L);
+        handler.postDelayed(() -> { if (!isFinishing() && snd != null) snd.start(); }, 380L);
         obdReader = new ObdBluetoothReader((values, live, stateText) -> {
             obdState = stateText; obdLive = live;
             if(vehicleDataSource != 1) return;
@@ -559,10 +722,13 @@ public class MainActivity extends Activity {
             if(dashboard != null) dashboard.invalidate();
         });
         if(vehicleDataSource == 1 && !obdAddress.isEmpty()) obdReader.start(obdAddress);
-        setContentView(dashboard);
         mediaManager = (MediaSessionManager) getSystemService(MEDIA_SESSION_SERVICE);
-        updateMedia();
-        refreshConnections();
+        handler.postDelayed(() -> {
+            if (isFinishing()) return;
+            ensureMediaSessionObserver();
+            updateMedia();
+            refreshConnections();
+        }, 180L);
         ArrayList<String> need = new ArrayList<>();
         if (Build.VERSION.SDK_INT >= 31 && checkSelfPermission("android.permission.BLUETOOTH_CONNECT") != PackageManager.PERMISSION_GRANTED) need.add("android.permission.BLUETOOTH_CONNECT");
         if (needGps() && checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) need.add(Manifest.permission.ACCESS_FINE_LOCATION);
@@ -588,9 +754,19 @@ public class MainActivity extends Activity {
     }
     @Override protected void onResume() {
         super.onResume();
+        // Permissão de notificações pode ter sido concedida enquanto a Activity
+        // estava pausada; tentar registrar novamente, sem duplicar ouvintes.
+        if (!firstResume) {
+            ensureMediaSessionObserver();
+            updateMedia();
+        }
         if (pendingInstall != null && getPackageManager().canRequestPackageInstalls()) { Uri pu = pendingInstall; pendingInstall = null; installApk(pu); }
-        startGps(); if (snd != null) snd.start(); applyBrightness(); lastCandStamp = 0;
-        if (dashboard != null) { dashboard.clearIcons(); dashboard.invalidate(); }
+        startGps();
+        // onResume também ocorre no primeiro lançamento: não duplicar a inicialização do áudio.
+        if (!firstResume && snd != null) snd.start();
+        firstResume = false;
+        appliedBrightnessPct = -1; applyBrightness(); lastCandStamp = 0;
+        if (dashboard != null) dashboard.invalidate(); // ícones já estão em cache por pacote
         // Cobre firmwares que retomam a Activity mas não transmitem ACTION_SCREEN_ON.
         if (wifiAutoOn && wifiAutoPausedAtElapsed > 0L &&
                 SystemClock.elapsedRealtime() - wifiAutoPausedAtElapsed > 60000L) {
@@ -612,7 +788,13 @@ public class MainActivity extends Activity {
         if (obdReader != null) obdReader.stop();
         try { if (downloadReceiver != null) unregisterReceiver(downloadReceiver); } catch (Exception ignored) {}
         if (mediaCtl != null) mediaCtl.unregisterCallback(mediaCallback);
+        if (mediaSessionObserverRegistered && mediaManager != null) {
+            try { mediaManager.removeOnActiveSessionsChangedListener(mediaSessionsChanged); }
+            catch (Exception ignored) {}
+            mediaSessionObserverRegistered = false;
+        }
         handler.removeCallbacksAndMessages(null);
+        spotifyCacheWorker.shutdownNow();
         try { if (netCallback != null) ((ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE)).unregisterNetworkCallback(netCallback); } catch (Exception ignored) {}
         stopGps();
         try { if (screenReceiver != null) unregisterReceiver(screenReceiver); } catch (Exception ignored) {}
@@ -634,7 +816,7 @@ public class MainActivity extends Activity {
             boolean speedCardShown = false;
             for (int id : topSlot) if (id == 0) { speedCardShown = true; break; }
             if (dashboard != null && ((m < SHINE_MS && !volumeVisible) || (criticalSpeedCard && speedCardShown))) dashboard.invalidateHeader();
-            handler.postDelayed(this, m < SHINE_MS ? 40 : Math.min(400, SHINE_PERIOD - m));
+            handler.postDelayed(this, m < SHINE_MS ? 65 : Math.min(500, SHINE_PERIOD - m));
         }
     };
 
@@ -643,6 +825,10 @@ public class MainActivity extends Activity {
         alertKind = kind; alertTitle = title; alertSub = sub; alertStart = SystemClock.uptimeMillis(); alertUntil = alertStart + ms;
         if (sound && alertSound) alertBeep();
         if (dashboard != null) dashboard.invalidate();
+        // Garante que o aviso desapareça mesmo que o GPS pare de enviar posições.
+        handler.postDelayed(() -> {
+            if (dashboard != null && SystemClock.uptimeMillis() >= alertUntil) dashboard.invalidate();
+        }, ms + 80);
     }
     private void alertBeep() {
         try { if (alertTone == null) alertTone = new ToneGenerator(AudioManager.STREAM_MUSIC, 90); alertTone.startTone(alertKind == 0 ? ToneGenerator.TONE_PROP_BEEP2 : ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, alertKind == 0 ? 600 : 350); } catch (Exception ignored) {}
@@ -664,7 +850,10 @@ public class MainActivity extends Activity {
             if (v > speedLimit) {
                 if (!overNow || nowEl - lastOverAlert > 30000) {
                     overNow = true; lastOverAlert = nowEl;
-                    if (speedVisualOn()) showAlert(1, "VELOCIDADE ACIMA DO LIMITE", Math.round(v) + " km/h  •  limite " + speedLimit + " km/h", 4000, speedSoundOn());
+                    if (speedVisualOn()) showAlert(1,
+                            "VOCÊ ESTÁ ACIMA DE " + speedLimit + " km/h",
+                            "Velocidade atual: " + Math.round(v) + " km/h",
+                            SPEED_ALERT_DURATION_MS, speedSoundOn());
                     else if (speedSoundOn() && alertSound) { alertKind = 1; alertBeep(); }
                 }
             } else if (v <= speedLimit - 2) overNow = false;
@@ -740,6 +929,27 @@ public class MainActivity extends Activity {
         },"PugRadarOSM").start();
     }
 
+    /** Estado efetivo da base: nunca confundir pontos OSM próximos com uma base offline nacional. */
+    private String radarOfflineSummary() {
+        int count = radarStore.personalCount();
+        if (count <= 0) return "NENHUMA BASE OFFLINE IMPORTADA";
+        return "BASE OFFLINE PRONTA • " + String.format(Locale.getDefault(), "%,d", count) + " pontos";
+    }
+    private String radarImportedDate() {
+        if (radarStore.personalCount() == 0 || radarImportAt <= 0) return "Nunca importada";
+        return new SimpleDateFormat("dd/MM/yyyy 'às' HH:mm", new Locale("pt", "BR")).format(new Date(radarImportAt));
+    }
+    private String radarIssueHint() {
+        if (!radarEnabled) return "Alertas desligados no interruptor principal.";
+        if (radarTypesMask == 0) return "Nenhuma categoria de radar selecionada.";
+        if (!radarAudio && !radarVisual) return "Som e aviso visual estão desligados.";
+        if (!gpsFresh()) return "Aguardando posição GPS recente.";
+        if (gpsAccuracy > 150) return "Sinal GPS pouco preciso para avisar.";
+        if (speedNow() < 9 || gpsBearing < 0) return "O veículo precisa estar em movimento para confirmar direção.";
+        if (radarStore.personalCount() == 0 && radarCount == 0) return "Sem pontos de alerta carregados: importe uma base CSV/ZIP ou consulte OSM.";
+        return "Aguardando aproximação de um ponto cadastrado à frente na rota.";
+    }
+
     private String radarSelectedTypes(){
         StringBuilder txt=new StringBuilder();
         for(int i=0;i<RadarStore.COUNT;i++)if((radarTypesMask&(1<<i))!=0){
@@ -807,7 +1017,9 @@ public class MainActivity extends Activity {
                         try(java.util.zip.ZipInputStream z=new java.util.zip.ZipInputStream(in)){
                             java.util.zip.ZipEntry e;int files=0;
                             while((e=z.getNextEntry())!=null){
-                                if(e.isDirectory()||!e.getName().toLowerCase(Locale.ROOT).endsWith(".csv"))continue;
+                                if(e.isDirectory())continue;
+                                String inner = e.getName().toLowerCase(Locale.ROOT);
+                                if(!inner.endsWith(".csv") && !inner.endsWith(".txt"))continue;
                                 if(++files>80)throw new IOException("Arquivo ZIP com mais de 80 listas");
                                 // Não fechar ZipInputStream após cada item.
                                 ByteArrayOutputStream buffer=new ByteArrayOutputStream();byte[] tmp=new byte[8192];int n;
@@ -826,7 +1038,7 @@ public class MainActivity extends Activity {
                         points.addAll(r.points);ignored=r.skipped;
                     }
                 }
-                if(points.isEmpty())throw new IOException("Nenhum ponto reconhecido. O CSV deve conter latitude, longitude e categoria ou nome do tipo de radar.");
+                if(points.isEmpty())throw new IOException("Nenhum ponto reconhecido. Use CSV com longitude, latitude e tipo, ou cabeçalhos latitude/longitude/categoria; confira o formato exportado.");
                 radarStore.replaceImported(points);
                 radarStore.save(new File(getFilesDir(),"radar_personal.dat"));
                 final int loaded=radarStore.personalCount(),skipped=ignored;
@@ -893,12 +1105,24 @@ public class MainActivity extends Activity {
             }
             root.addView(label("Radar móvel: pontos históricos/possíveis locais de fiscalização. Não detecta operação policial ao vivo.",12,cMuted,false));
             divider(root);
-            root.addView(label("BASE LOCAL: "+radarStore.personalCount()+" pontos • OSM: "+radarCount+" próximos",14,cText,true));
-            root.addView(label("Arquivo: "+radarImportName,12,cMuted,false));
-            String when=radarImportAt==0?"Não atualizada":new SimpleDateFormat("dd/MM/yyyy",Locale.getDefault()).format(new Date(radarImportAt));
-            root.addView(label("Última importação: "+when+" • "+radarImportStatus,12,cMuted,false));
-            if(radarImportAt>0 && System.currentTimeMillis()-radarImportAt>30L*86400000L)
-                root.addView(label("Base com mais de 30 dias: atualize manualmente no site de origem.",12,cBad,false));
+            section(root,"BASE DE RADARES","Quantidade e atualização reais, sem estimativas");
+            int offlineCount = radarStore.personalCount();
+            root.addView(label(radarOfflineSummary(),17,offlineCount>0?cOk:cBad,true));
+            root.addView(label("Última atualização offline: " + radarImportedDate(),14,cText,false));
+            if (offlineCount > 0) {
+                root.addView(label("Arquivo importado: " + radarImportName,12,cMuted,false));
+                int[] byType=radarStore.personalCounts();
+                for(int i=0;i<RadarStore.COUNT;i++)if(byType[i]>0)
+                    root.addView(label("  • " + RadarStore.LABELS[i] + ": " + String.format(Locale.getDefault(), "%,d", byType[i]),12,cMuted,false));
+                if(radarImportAt>0 && System.currentTimeMillis()-radarImportAt>30L*86400000L)
+                    root.addView(label("Base com mais de 30 dias: considere atualizar manualmente.",12,cBad,false));
+            } else {
+                root.addView(label("Importe um CSV/ZIP obtido no site de origem para usar alertas offline.",13,cMuted,false));
+            }
+            root.addView(label("OSM online: " + radarCount + " pontos encontrados perto do GPS (raio de 7 km)",13,cText,false));
+            root.addView(label("Estado dos avisos: " + radarIssueHint(),12,cMuted,false));
+            root.addView(label("Indicador do botão: verde = GPS e pontos carregados; amarelo = precisa conferir; cinza = desligado.",12,cMuted,false));
+            root.addView(label("Importação: " + radarImportStatus,12,cMuted,false));
             LinearLayout actions=new LinearLayout(this);root.addView(actions);
             actionButton(actions,"Importar CSV/ZIP",this::chooseRadarFile);
             actionButton(actions,"Diagnóstico",()->{dismissQuick();showRadarDiagnostic();});
@@ -1004,7 +1228,9 @@ public class MainActivity extends Activity {
             "\nInternet: " + (netOnline ? "SIM" : "NÃO") +
             "\nConsulta em andamento: " + (radarFetching ? "SIM" : "NÃO") +
             "\nFonte online OSM em 7 km: " + radarCount +
-            "\nBase pessoal offline: " + radarStore.personalCount() + " pontos (" + radarImportName + ")" +
+            "\nBase pessoal offline: " + radarOfflineSummary() +
+            "\nÚltima atualização offline: " + radarImportedDate() +
+            "\nArquivo: " + radarImportName +
             "\nPontos habilitados a 1,5 km: " + nearCount + " (móveis: " + mobileCount + ")" +
             "\nPonto mais próximo: " + (nearCount>0?Math.round(nearest)+" m":"nenhum cadastrado") +
             "\nImportação: " + radarImportStatus +
@@ -1013,6 +1239,7 @@ public class MainActivity extends Activity {
             "\nÚltima consulta bem-sucedida: " + (age < 0 ? "nunca" : age/60+" min atrás") +
             "\nEstado: " + radarError +
             "\nDetalhe: " + radarLastDetail +
+            "\nPor que ainda não avisou? " + radarIssueHint() +
             "\nÚltimo aviso: " + (radarLastAlertAt == 0 ? "nenhum" : (SystemClock.elapsedRealtime()-radarLastAlertAt)/60_000+" min atrás") +
             "\nRadar móvel: local conhecido cadastrado, NÃO detecção ao vivo.\nAvisos só com launcher visível. Verifique sinalização da via.";
     }
@@ -1115,6 +1342,8 @@ public class MainActivity extends Activity {
                         screenOffAt = SystemClock.elapsedRealtime();
                         wifiAutoAttemptedThisWake = false;
                     } else if (Intent.ACTION_SCREEN_ON.equals(a)) {
+                        appliedBrightnessPct = -1;
+                        applyBrightness();
                         long sleepMs = screenOffAt > 0 ? SystemClock.elapsedRealtime() - screenOffAt : 0;
                         if (sleepMs > 20000L) { screenOffAt = 0; armStartupFade(); }
                         if (wifiAutoOn && sleepMs > 20000L)
@@ -1554,6 +1783,154 @@ public class MainActivity extends Activity {
     private boolean isMuted() { return userMuted || audio.getStreamVolume(AudioManager.STREAM_MUSIC) == 0; }
 
     // ---------------------------------------------------------------- mídia (Spotify primeiro; senão qualquer sessão ativa)
+    private void ensureMediaSessionObserver() {
+        if (mediaManager == null || mediaSessionObserverRegistered) return;
+        try {
+            mediaManager.addOnActiveSessionsChangedListener(mediaSessionsChanged,
+                    new ComponentName(this, SpotifyNotificationListener.class), handler);
+            mediaSessionObserverRegistered = true;
+        } catch (SecurityException ignored) { // usuário ainda não liberou acesso às notificações
+        } catch (Exception ignored) { // firmware pode restringir os ouvintes; fallback periódico continua
+        }
+    }
+    /** Restaura um rascunho local da última música enquanto o serviço Spotify reconecta. */
+    private void restoreLastSpotifyPreview() {
+        SharedPreferences prefs = getPreferences(0);
+        lastSpotifyTitle = prefs.getString("spotify_cache_title", "");
+        lastSpotifyArtist = prefs.getString("spotify_cache_artist", "");
+        if (lastSpotifyTitle.isEmpty()) return;
+        showLastSpotifyPreview();
+        spotifyCacheWorker.execute(() -> {
+            Bitmap bmp = null;
+            try {
+                File f = new File(getFilesDir(), "spotify_last_cover.jpg");
+                if (f.isFile() && f.length() > 0 && f.length() < 300_000)
+                    bmp = BitmapFactory.decodeFile(f.getAbsolutePath());
+            } catch (Exception ignored) { }
+            final Bitmap loaded = bmp;
+            handler.post(() -> {
+                if (isFinishing() || isDestroyed()) return;
+                if (loaded != null) {
+                    lastSpotifyArt = loaded;
+                    if (cachedSpotifyPreview && mediaCtl == null) {
+                        albumArt = loaded;
+                        artKey = "";
+                        maybeUpdateArtColor();
+                        if (dashboard != null) dashboard.invalidate();
+                    }
+                }
+            });
+        });
+    }
+    private void showLastSpotifyPreview() {
+        cachedSpotifyPreview = true;
+        mediaPlaying = false;
+        mediaIsSpotify = true;
+        mediaSource = lastSpotifyTitle.isEmpty() ? "Spotify" : "Spotify • última música";
+        songTitle = lastSpotifyTitle.isEmpty() ? "Nenhuma música em reprodução" : lastSpotifyTitle;
+        songArtist = lastSpotifyTitle.isEmpty() ? "Abra o Spotify para começar" : lastSpotifyArtist;
+        albumArt = lastSpotifyArt;
+        songDuration = songPosBase = songPosStamp = 0;
+        songSpeed = 0;
+    }
+    /** Compacta a capa para 320px em uma fila de I/O, apenas quando o título muda. */
+    private void cacheCurrentSpotify(String title, String artist, Bitmap artwork) {
+        if (title == null || title.isEmpty()) return;
+        String key = title + "\u0001" + artist;
+        boolean newTrack = !key.equals(lastSpotifyQueued);
+        lastSpotifyTitle = title;
+        lastSpotifyArtist = artist;
+        if (artwork != null || newTrack) lastSpotifyArt = artwork;
+        if (!newTrack && (artwork == null || lastSpotifyQueuedHasArt)) return;
+        lastSpotifyQueued = key;
+        lastSpotifyQueuedHasArt = artwork != null;
+        spotifyCacheWorker.execute(() -> {
+            File dst = new File(getFilesDir(), "spotify_last_cover.jpg");
+            File tmp = new File(getFilesDir(), "spotify_last_cover.jpg.tmp");
+            try {
+                if (artwork != null && !artwork.isRecycled()) {
+                    int edge = Math.min(artwork.getWidth(), artwork.getHeight());
+                    if (edge > 0) {
+                        Bitmap scaled = Bitmap.createScaledBitmap(artwork, 320, 320, true);
+                        try (FileOutputStream out = new FileOutputStream(tmp)) {
+                            scaled.compress(Bitmap.CompressFormat.JPEG, 78, out);
+                        }
+                        if (scaled != artwork) scaled.recycle();
+                        if (!tmp.renameTo(dst)) {
+                            if (dst.exists()) dst.delete();
+                            if (!tmp.renameTo(dst)) throw new IOException("Falha ao salvar capa");
+                        }
+                    }
+                } else if (dst.exists()) {
+                    dst.delete(); // não manter capa da faixa anterior com um título novo.
+                }
+                getPreferences(0).edit()
+                        .putString("spotify_cache_title", title)
+                        .putString("spotify_cache_artist", artist).apply();
+            } catch (Exception ignored) { tmp.delete(); }
+        });
+    }
+
+    /** Atualiza apenas o estado da sessão atual, sem obter lista de sessões novamente. */
+    private void applyCurrentMedia(MediaController controller, MediaMetadata m, PlaybackState state) {
+        if (controller == null) return;
+        String oldTitle = songTitle, oldArtist = songArtist, oldSource = mediaSource;
+        boolean oldPlaying = mediaPlaying, oldCached = cachedSpotifyPreview;
+        mediaIsSpotify = "com.spotify.music".equals(controller.getPackageName());
+        mediaSource = mediaIsSpotify ? "Spotify" : appLabel(controller.getPackageName());
+        cachedSpotifyPreview = false;
+        boolean artworkChanged = false;
+        if (m != null) {
+            String nextTitle = m.getString(MediaMetadata.METADATA_KEY_TITLE);
+            String nextArtist = m.getString(MediaMetadata.METADATA_KEY_ARTIST);
+            nextTitle = nextTitle == null || nextTitle.isEmpty() ? mediaSource : nextTitle;
+            nextArtist = nextArtist == null ? "" : nextArtist;
+            boolean trackChanged = !nextTitle.equals(songTitle) || !nextArtist.equals(songArtist) || oldCached;
+            songTitle = nextTitle;
+            songArtist = nextArtist;
+            Bitmap image = m.getBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART);
+            if (image == null) image = m.getBitmap(MediaMetadata.METADATA_KEY_ART);
+            if (image == null && mediaIsSpotify && nextTitle.equals(lastSpotifyTitle)
+                    && nextArtist.equals(lastSpotifyArtist)) image = lastSpotifyArt;
+            // Não reatribuir a mesma capa a cada evento de posição: menos carga na GPU.
+            if (trackChanged || (albumArt == null && image != null)) {
+                artworkChanged = albumArt != image;
+                albumArt = image;
+            }
+            if (mediaIsSpotify && !nextTitle.equals("Spotify") &&
+                    (trackChanged || (image != null && !lastSpotifyQueuedHasArt)))
+                cacheCurrentSpotify(nextTitle, nextArtist, image);
+            songDuration = m.getLong(MediaMetadata.METADATA_KEY_DURATION);
+        } else if (oldCached) {
+            // A sessão foi encontrada, mas ainda não enviou metadados: não promover
+            // uma prévia antiga a música atual.
+            songTitle = mediaSource;
+            songArtist = "Aguardando informações da música";
+            albumArt = null;
+            songDuration = 0;
+        }
+        mediaPlaying = state != null && state.getState() == PlaybackState.STATE_PLAYING;
+        if (state != null) {
+            songPosBase = Math.max(0, state.getPosition());
+            songPosStamp = state.getLastPositionUpdateTime();
+            songSpeed = state.getPlaybackSpeed();
+        } else { songPosBase = 0; songPosStamp = 0; songSpeed = 0; }
+        trackPlaybackFade();
+        if (artworkChanged) { artKey = ""; maybeUpdateArtColor(); }
+        boolean significant = oldCached || oldPlaying != mediaPlaying ||
+                !oldTitle.equals(songTitle) || !oldArtist.equals(songArtist) ||
+                !oldSource.equals(mediaSource) || artworkChanged;
+        if (dashboard != null) {
+            if (significant) dashboard.invalidate();
+            else dashboard.invalidateMediaProgress();
+        }
+    }
+    private void refreshCurrentMedia() {
+        MediaController current = mediaCtl;
+        if (current == null) return;
+        try { applyCurrentMedia(current, current.getMetadata(), current.getPlaybackState()); }
+        catch (Exception ignored) { /* sessão encerrou; o observador descobrirá outra */ }
+    }
     private void updateMedia() {
         if (mediaManager == null) return;
         try {
@@ -1567,41 +1944,31 @@ public class MainActivity extends Activity {
                 if (s != null && s.getState() == PlaybackState.STATE_PLAYING) { found = c; break; }
             }
             if (found == null && !sessions.isEmpty() && sessions.get(0).getMetadata() != null) found = sessions.get(0);
-            if (mediaCtl != found) {
+            // getActiveSessions pode criar novos objetos MediaController para a mesma sessão.
+            // Não remover/registrar o callback a cada varredura: comparar o SessionToken.
+            boolean sameSession = false;
+            if (mediaCtl != null && found != null) {
+                try { sameSession = mediaCtl.getSessionToken().equals(found.getSessionToken()); }
+                catch (Exception ignored) {}
+            }
+            if (!sameSession) {
                 if (mediaCtl != null) mediaCtl.unregisterCallback(mediaCallback);
                 mediaCtl = found;
-                if (found != null) found.registerCallback(mediaCallback);
+                if (found != null) found.registerCallback(mediaCallback, handler);
             }
-            if (found != null) {
-                mediaIsSpotify = "com.spotify.music".equals(found.getPackageName());
-                mediaSource = mediaIsSpotify ? "Spotify" : appLabel(found.getPackageName());
-                MediaMetadata m = found.getMetadata();
-                if (m != null) {
-                    songTitle = m.getString(MediaMetadata.METADATA_KEY_TITLE);
-                    songArtist = m.getString(MediaMetadata.METADATA_KEY_ARTIST);
-                    if (songTitle == null || songTitle.isEmpty()) songTitle = mediaSource;
-                    if (songArtist == null) songArtist = "";
-                    albumArt = m.getBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART);
-                    if (albumArt == null) albumArt = m.getBitmap(MediaMetadata.METADATA_KEY_ART);
-                    songDuration = m.getLong(MediaMetadata.METADATA_KEY_DURATION);
-                }
-                PlaybackState state = found.getPlaybackState();
-                mediaPlaying = state != null && state.getState() == PlaybackState.STATE_PLAYING;
-                if (state != null) { songPosBase = Math.max(0, state.getPosition()); songPosStamp = state.getLastPositionUpdateTime(); songSpeed = state.getPlaybackSpeed(); }
-                else { songPosBase = 0; songPosStamp = 0; songSpeed = 0; }
-            } else {
-                mediaSource = "Spotify"; mediaIsSpotify = true;
-                songTitle = "Nenhuma música em reprodução";
-                songArtist = "Abra o Spotify para começar";
-                albumArt = null; mediaPlaying = false; songDuration = 0; songPosBase = 0; songPosStamp = 0;
+            if (mediaCtl != null) applyCurrentMedia(mediaCtl, mediaCtl.getMetadata(), mediaCtl.getPlaybackState());
+            else if (!cachedSpotifyPreview) {
+                showLastSpotifyPreview(); // não exibir como reprodução atual
+                trackPlaybackFade();
+                artKey = "";
+                maybeUpdateArtColor();
+                if (dashboard != null) dashboard.invalidate();
             }
-            trackPlaybackFade(); maybeUpdateArtColor();
         } catch (SecurityException ex) {
             mediaPermission = false; mediaCtl = null;
             songTitle = "Ative o acesso às notificações";
             songArtist = "Para mostrar a música em reprodução";
         } catch (Exception ignored) {}
-        if (dashboard != null) dashboard.invalidate();
     }
     /** Posição interpolada: avança sozinha entre as atualizações do Android. */
     private long livePosition() {
@@ -1619,7 +1986,11 @@ public class MainActivity extends Activity {
             } else if (!mediaPermission) openNotificationAccess();
             else launch(2);
         } catch (Exception e) { snack("Controle de mídia indisponível"); }
-        handler.postDelayed(this::updateMedia, 450);
+        // Retorno visual rápido; não aguarda a próxima varredura geral (até 15s).
+        // O callback do Spotify é a fonte preferencial; estes são só fallbacks leves.
+        handler.postDelayed(this::refreshCurrentMedia, 150);
+        handler.postDelayed(this::refreshCurrentMedia, 650);
+        if (dashboard != null) dashboard.invalidate();
     }
     private void openNotificationAccess() {
         try { startActivity(new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)); }
@@ -1888,7 +2259,8 @@ public class MainActivity extends Activity {
         b.append("Clima: ").append(lastWeatherSuccess > 0 ? "consulta concluída" : "sem consulta concluída").append('\n');
         b.append("Clima GPS: ").append(weatherAuto ? "ligado" : "desligado").append('\n');
         b.append("Cidade detectada: ").append(weatherDetail.isEmpty() ? "indisponível" : weatherDetail).append('\n');
-        b.append("Radar: ").append(radarEnabled ? "ligado" : "desligado").append(" • ").append(radarCount).append(" pontos • ").append(radarError).append('\n');
+        b.append("Radar: ").append(radarEnabled ? "ligado" : "desligado").append(" • ").append(radarCount).append(" pontos online • ").append(radarStore.personalCount()).append(" pessoais • ").append(radarError).append('\n');
+        b.append("Brilho: ").append(brightnessModeName()).append(" • ").append(brightnessPercent()).append("% • Botão visível: ").append(topBrightnessVisible ? "SIM" : "NÃO").append('\n');
         b.append("Fonte do veículo: ").append(vehicleDataSource==1?"OBD2 Bluetooth":"Jancar CANBOX").append('\n');
         if(vehicleDataSource==1)b.append("OBD2: ").append(obdState).append('\n');
         b.append("CAN/OBD telemetria: ").append(hasCanData() ? "válida" : "não disponível").append('\n');
@@ -1969,7 +2341,7 @@ public class MainActivity extends Activity {
     }
 
     private int topOptionalCount(){
-        return ((topBtVisible||topWifiVisible)?1:0)+(topRadarVisible?1:0)
+        return ((topBtVisible||topWifiVisible)?1:0)+(topBrightnessVisible?1:0)+(topRadarVisible?1:0)
                 +(topPcVisible?1:0)+(topEqVisible?1:0)+(topCustomVisible?1:0);
     }
     private boolean canShowExtraTop(boolean enabled){
@@ -2053,6 +2425,10 @@ public class MainActivity extends Activity {
                         if (checked && !topBtVisible && !canShowExtraTop(true)) { ((Switch)v).setChecked(false); return; }
                         topWifiVisible=checked;getPreferences(0).edit().putBoolean("top_show_wifi",checked).apply();dashboard.invalidate();
                     });
+                    switchRow(page,"Mostrar Brilho (toque / segurar 3 s)",topBrightnessVisible,(v,checked)->{
+                        if (checked && !canShowExtraTop(true)) { ((Switch)v).setChecked(false); return; }
+                        topBrightnessVisible=checked;getPreferences(0).edit().putBoolean("top_show_brightness",checked).apply();dashboard.invalidate();
+                    });
                     switchRow(page,"Mostrar Radar",topRadarVisible,(v,checked)->{
                         if (checked && !canShowExtraTop(true)) { ((Switch)v).setChecked(false); return; }
                         topRadarVisible=checked;getPreferences(0).edit().putBoolean("top_show_radar",checked).apply();dashboard.invalidate();
@@ -2071,7 +2447,8 @@ public class MainActivity extends Activity {
                     });
                     LinearLayout customRow = new LinearLayout(this); page.addView(customRow);
                     actionButton(customRow, "Escolher aplicativo do botão", this::chooseTopCustomApp);
-                    page.addView(label("Conexões reúne Wi-Fi e Bluetooth em um botão. Máximo de 4 atalhos + Config. EQ abre a tela de áudio completa.",12,cMuted,false));
+                    page.addView(label("Conexões reúne Wi-Fi e Bluetooth. Brilho entra ao lado de Rede quando habilitado; limite de 4 atalhos + Config.",12,cMuted,false));
+                    page.addView(label("Brilho: toque = Auto → Mínimo → Máximo; segurar por 3 segundos = ajuste manual. EQ permanece completo.",12,cMuted,false));
                     page.addView(label("Estas opções escondem apenas os botões da barra, não desligam Bluetooth, Wi-Fi ou os serviços do veículo.",12,cMuted,false));
                     page.addView(label("Se o Wi-Fi desliga ao ligar o carro, confira as configurações de energia/rede da Jancar: o launcher não executa comandos para desligá-lo.",12,cMuted,false));
                     divider(page);
@@ -2100,11 +2477,19 @@ public class MainActivity extends Activity {
                         albumBg = checked; getPreferences(0).edit().putBoolean("album_bg", checked).apply(); artKey = "";
                         if (checked) maybeUpdateArtColor(); else setArtTarget(0);
                     });
-                    switchRow(page, "Brilho automático (acompanha dia/noite)", autoBrightness, (v, checked) -> {
-                        autoBrightness = checked; getPreferences(0).edit().putBoolean("auto_bright", checked).apply(); applyBrightness();
+                    section(page, "BRILHO", "Escolha o modo no menu rápido ou faça um ajuste manual detalhado");
+                    choiceRow(page,"Modo de brilho",new String[]{"Automático (dia/noite)","Mínimo","Máximo","Manual"},brightnessMode,
+                            value -> { saveBrightnessMode(value); redraw[0].run(); });
+                    stepperRow(page, "Brilho máximo (dia)", brightDay, 10, 100, 5, "%", val -> {
+                        brightDay = Math.max(val, brightNight);
+                        getPreferences(0).edit().putInt("bright_day", brightDay).apply(); appliedBrightnessPct=-1; applyBrightness();
                     });
-                    stepperRow(page, "Brilho de dia", brightDay, 10, 100, 10, "%", val -> { brightDay = val; getPreferences(0).edit().putInt("bright_day", val).apply(); applyBrightness(); });
-                    stepperRow(page, "Brilho de noite", brightNight, 5, 100, 5, "%", val -> { brightNight = val; getPreferences(0).edit().putInt("bright_night", val).apply(); applyBrightness(); });
+                    stepperRow(page, "Brilho mínimo (noite)", brightNight, 5, 95, 5, "%", val -> {
+                        brightNight = Math.min(val, brightDay);
+                        getPreferences(0).edit().putInt("bright_night", brightNight).apply(); appliedBrightnessPct=-1; applyBrightness();
+                    });
+                    LinearLayout brightActions=new LinearLayout(this);page.addView(brightActions);
+                    actionButton(brightActions,"Abrir ajuste manual",this::openBrightnessQuickMenu);
                     if (!Settings.System.canWrite(this)) {
                         LinearLayout permRow = new LinearLayout(this); permRow.setGravity(Gravity.CENTER_VERTICAL);
                         TextView note = label("Brilho só dentro do launcher. Para valer também no Waze/outros apps:", 12, cMuted, false);
@@ -2332,7 +2717,7 @@ public class MainActivity extends Activity {
                     });
                     actionButton(alertTests, "Testar velocidade", () -> {
                         if (activeDialog != null && activeDialog.isShowing()) activeDialog.dismiss();
-                        showAlert(1, "TESTE DE VELOCIDADE", (speedLimit + 12) + " km/h  •  limite " + speedLimit + " km/h", 5000, true);
+                        showAlert(1, "VOCÊ ESTÁ ACIMA DE " + speedLimit + " km/h", "Teste: " + (speedLimit + 12) + " km/h", SPEED_ALERT_DURATION_MS, true);
                     });
                     LinearLayout radarDiagRow = new LinearLayout(this); page.addView(radarDiagRow);
                     actionButton(radarDiagRow, "Ver diagnóstico e consultar radares", this::showRadarDiagnostic);
@@ -2834,7 +3219,7 @@ public class MainActivity extends Activity {
 
     private class Dashboard extends View {
         static final int I_NAV = 0, I_RADIO = 1, I_NOTE = 2, I_PHONE = 3, I_BT = 4, I_GRID = 5, I_GEAR = 6, I_WIFI = 7,
-                I_MINUS = 8, I_PLUS = 9, I_PREV = 10, I_NEXT = 11, I_PLAY = 12, I_PAUSE = 13, I_SPEAKER = 14, I_MUTE = 15, I_HOME = 16, I_WORK = 17, I_MENU = 18, I_TRIP = 19, I_BACK = 20, I_EQ = 21, I_YOUTUBE = 22, I_MAPS = 23, I_CHROME = 24, I_RADAR = 25;
+                I_MINUS = 8, I_PLUS = 9, I_PREV = 10, I_NEXT = 11, I_PLAY = 12, I_PAUSE = 13, I_SPEAKER = 14, I_MUTE = 15, I_HOME = 16, I_WORK = 17, I_MENU = 18, I_TRIP = 19, I_BACK = 20, I_EQ = 21, I_YOUTUBE = 22, I_MAPS = 23, I_CHROME = 24, I_RADAR = 25, I_SUN = 26, I_MOON = 27, I_AUTO_BRIGHT = 28;
         final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG), mp = new Paint(Paint.ANTI_ALIAS_FLAG);
         final RectF r = new RectF();
         final Path path = new Path();
@@ -2852,6 +3237,15 @@ public class MainActivity extends Activity {
 
         Dashboard() { super(MainActivity.this); setHapticFeedbackEnabled(true); }
         void clearIcons() { iconCache.clear(); }
+        /** Clipa o redesenho ao progresso do Spotify, sem invalidar toda a tela por segundo. */
+        void invalidateMediaProgress() {
+            if (getWidth() == 0 || getHeight() == 0) return;
+            float scale = Math.min(getWidth() / 1280f, getHeight() / 720f);
+            float left = (getWidth() - 1280 * scale) / 2f;
+            float top = (getHeight() - 720 * scale) / 2f;
+            invalidate((int)(left + 380*scale), (int)(top + 310*scale),
+                    (int)(left + 1250*scale), (int)(top + 555*scale));
+        }
         int faint() { return (cDim & 0x00FFFFFF) | 0x99000000; } // aviso quase invisível
 
         // ---------- primitivas
@@ -2910,6 +3304,24 @@ public class MainActivity extends Activity {
             canvas.save(); canvas.translate(cx, cy);
             float u = s / 2f, sw = Math.max(2f, s * 0.09f);
             switch (k) {
+                case I_SUN: {
+                    stroke(col,sw);canvas.drawCircle(0,0,.42f*u,p);
+                    for (int n=0;n<8;n++) { double a=n*Math.PI/4;
+                        canvas.drawLine((float)Math.cos(a)*.62f*u,(float)Math.sin(a)*.62f*u,
+                                (float)Math.cos(a)*.92f*u,(float)Math.sin(a)*.92f*u,p); }
+                    break;
+                }
+                case I_MOON: {
+                    fill(col);canvas.drawCircle(0,0,.76f*u,p);
+                    fill(cSurf2);canvas.drawCircle(.37f*u,-.26f*u,.73f*u,p);
+                    break;
+                }
+                case I_AUTO_BRIGHT: {
+                    stroke(col,sw);canvas.drawCircle(-.22f*u,0,.50f*u,p);
+                    canvas.drawArc(-.54f*u,-.54f*u,.92f*u,.92f*u,-55,105,false,p);
+                    canvas.drawLine(-.16f*u,-.91f*u,-.16f*u,-.72f*u,p);
+                    break;
+                }
                 case I_RADAR: {
                     stroke(col,sw*.9f);canvas.drawArc(-.92f*u,-.92f*u,.92f*u,.92f*u,195,130,false,p);
                     canvas.drawArc(-.63f*u,-.63f*u,.63f*u,.63f*u,195,130,false,p);
@@ -3200,6 +3612,12 @@ public class MainActivity extends Activity {
             float groupX = x + (w - groupWidth)/2f;
             ic(kind, groupX + iconSize/2f, 36, iconSize, active ? accent : cDim);
             t(visibleLabel, groupX + iconSize + gapLabel, 41, fs, cText, tfMed);
+            if (id == 44) {
+                // Indicação factual: ativado NÃO significa que exista radar perto.
+                int status = !radarEnabled ? cDim :
+                        (gpsFresh() && (radarStore.personalCount() > 0 || radarCount > 0)) ? cOk : 0xffE0A333;
+                circle(x + w - 10, 22, 4.0f, status);
+            }
         }
 
         void topVolumeKey(int id, float x, float w, int kind, String description, boolean active) {
@@ -3223,10 +3641,12 @@ public class MainActivity extends Activity {
             if (topVolumeVisible) {
                 ln(606, 22, 606, 50, cHair, 1.5f);
                 // Controles diretos: menos, mais e mudo. Somente o HUD central mostra números.
-                topVolumeKey(1, 615, 58, I_MINUS, "Diminuir volume", false);
-                topVolumeKey(2, 680, 58, I_PLUS, "Aumentar volume", false);
-                topVolumeKey(3, 745, 58, I_MUTE, "Alternar mudo", isMuted());
-                ln(805, 22, 805, 50, cHair, 1.5f);
+                // Controles separados por áreas livres para evitar acionar MUDO ao usar o +.
+                topVolumeKey(1, 610, 52, I_MINUS, "Diminuir volume", false);
+                topVolumeKey(2, 675, 52, I_PLUS, "Aumentar volume", false);
+                ln(739, 20, 739, 52, cHair, 1.4f); // divisor entre volume e MUDO
+                topVolumeKey(3, 750, 52, I_MUTE, "Alternar mudo", isMuted());
+                ln(809, 22, 809, 50, cHair, 1.5f);
             }
             // Até quatro atalhos opcionais + Config, com largura proporcional.
             float left = topVolumeVisible ? 822 : 615;
@@ -3234,6 +3654,7 @@ public class MainActivity extends Activity {
             // 4 atalhos rápidos + Config fixo. Wi-Fi e Bluetooth são um único submenu.
             ArrayList<Integer> choices = new ArrayList<>();
             if(topBtVisible||topWifiVisible)choices.add(48);
+            if(topBrightnessVisible)choices.add(49); // ao lado de Rede, respeitando limite de atalhos
             if(topRadarVisible)choices.add(44);
             if(topPcVisible)choices.add(43);
             if(topEqVisible)choices.add(7); // EQ sempre abre o painel COMPLETO
@@ -3245,6 +3666,9 @@ public class MainActivity extends Activity {
             for(int id:choices){
                 boolean enabled=id==48?(wifiConnected||btConnected):id==44?radarEnabled:id==43?vehicleMenuEnabled:id==7?(snd!=null&&snd.on):true;
                 if(id==48)topPill(id,at,itemW,I_WIFI,"Rede",enabled);
+                else if(id==49)topPill(id,at,itemW,
+                        brightnessMode==BRIGHT_MIN?I_MOON:brightnessMode==BRIGHT_MAX?I_SUN:I_AUTO_BRIGHT,
+                        "Brilho",true);
                 else if(id==44)topPill(id,at,itemW,I_RADAR,"Radar",enabled);
                 else if(id==43)topPill(id,at,itemW,I_TRIP,"Veículo",enabled);
                 else if(id==7)topPill(id,at,itemW,I_EQ,"EQ",enabled);
@@ -3262,12 +3686,9 @@ public class MainActivity extends Activity {
         void drawWeatherIdle(float x, float w, float h) {
             float y = 96, cx = x + w/2;
             card(x,y,w,h);
-            String time = new SimpleDateFormat("HH:mm", Locale.getDefault()).format(new Date());
-            Locale br = new Locale("pt","BR");
-            String date = new SimpleDateFormat("EEEE, d 'de' MMMM", br).format(new Date());
-            if (!date.isEmpty()) date = date.substring(0,1).toUpperCase(br) + date.substring(1);
-            tc(time,cx,y+112,Math.min(90,w*.19f),cText,tfLight);
-            tc(fit(date,19,tfReg,w-35),cx,y+156,19,cMuted,tfReg);
+            refreshClockText();
+            tc(clockText,cx,y+112,Math.min(90,w*.19f),cText,tfLight);
+            tc(fit(clockDateText,19,tfReg,w-35),cx,y+156,19,cMuted,tfReg);
             ln(x+24,y+177,x+w-24,y+177,cHair,1.5f);
             boolean hasWx = (weatherAuto || !weatherCity.isEmpty()) && weatherLine.endsWith("°C");
             if (!hasWx) {
@@ -3390,12 +3811,9 @@ public class MainActivity extends Activity {
         void drawClockWeather() {
             float x = 32, y = 96, w = 330, h = 456, cx = x + w / 2;
             card(x, y, w, h);
-            String time = new SimpleDateFormat("HH:mm", Locale.getDefault()).format(new Date());
-            tc(time, cx, 202, 92, cText, tfLight);
-            Locale br = new Locale("pt", "BR");
-            String date = new SimpleDateFormat("EEEE, d 'de' MMMM", br).format(new Date());
-            date = date.substring(0, 1).toUpperCase(br) + date.substring(1);
-            tc(date, cx, 240, 20, cMuted, tfReg);
+            refreshClockText();
+            tc(clockText, cx, 202, 92, cText, tfLight);
+            tc(clockDateText, cx, 240, 20, cMuted, tfReg);
             ln(x + 24, 264, x + w - 24, 264, cHair, 1.5f);
             boolean hasWx = (weatherAuto || !weatherCity.isEmpty()) && weatherLine.endsWith("°C");
             if (!hasWx) {
@@ -3450,7 +3868,9 @@ public class MainActivity extends Activity {
             text(mediaPlaying ? "TOCANDO AGORA" : (mediaCtl != null ? "EM PAUSA" : mediaSource.toUpperCase(Locale.getDefault())), tx, yl, 14, accent, tfBold, Paint.Align.LEFT, .1f);
             t(fit(songTitle, ts, tfBold, tw), tx, yt, ts, cText, tfBold);
             t(fit(songArtist, as, tfReg, tw), tx, ya, as, cMuted, tfReg);
-            if (mediaCtl == null) t(fit(mediaPermission ? "Toque para abrir o Spotify" : "Permitir acesso às notificações", 17, tfMed, tw), tx, yh, 17, accent, tfMed);
+            if (mediaCtl == null) t(fit(cachedSpotifyPreview ? "Última música • aguardando conexão" :
+                    (mediaPermission ? "Toque na capa para abrir o Spotify" : "Permitir acesso às notificações"),
+                    17, tfMed, tw), tx, yh, 17, accent, tfMed);
             long pos = livePosition();
             float by = wide ? 358 : 332, bh = wide ? 10 : 8, frac = songDuration > 0 ? Math.min(1f, (float) pos / songDuration) : 0f;
             rr(tx, by, tw, bh, bh / 2, cTrack);
@@ -3551,7 +3971,10 @@ public class MainActivity extends Activity {
             circle(x + 92, y + h / 2, 44, col);
             fill(night ? 0xff0B1015 : 0xffFFFFFF); path.reset(); path.moveTo(x + 92, y + h / 2 - 24); path.lineTo(x + 92 + 27, y + h / 2 + 20); path.lineTo(x + 92 - 27, y + h / 2 + 20); path.close(); canvas.drawPath(path, p);
             fill(col); canvas.drawRect(x + 89.5f, y + h / 2 - 10, x + 94.5f, y + h / 2 + 5, p); canvas.drawCircle(x + 92, y + h / 2 + 13, 3f, p);
-            t(fit(alertTitle, 36, tfBold, w - 190), x + 158, y + 76, 36, cText, tfBold);
+            // Título do excesso mostra o limite configurado sem cortar na borda.
+            float titleSize = alertKind == 1 ? 29 : 36;
+            while (titleSize > 23 && measure(alertTitle, titleSize, tfBold, 0) > w - 180) titleSize -= 1;
+            t(fit(alertTitle, titleSize, tfBold, w - 180), x + 158, y + 76, titleSize, cText, tfBold);
             t(fit(alertSub, 25, tfMed, w - 190), x + 158, y + 116, 25, cMuted, tfMed);
             tr("toque para fechar", x + w - 22, y + h - 14, 13, faintC(), tfReg);
             canvas.restore(); canvas.restore();
@@ -3614,6 +4037,7 @@ public class MainActivity extends Activity {
                 case 46: if (userMuted) toggleMute(); break;
                 case 44: openRadarQuickMenu(); break;
                 case 48: openConnectionQuickMenu(); break;
+                case 49: cycleBrightness(); break;
                 case 6: if (!drivingMode) settings(); break;
                 case 7: openEq(); break;
                 case 40: openVehicleQuickMenu(); break;
@@ -3661,7 +4085,14 @@ public class MainActivity extends Activity {
             switch (act) {
                 case MotionEvent.ACTION_DOWN: {
                     Hit h = hitAt(x, y); pressedId = h == null ? -1 : h.id; lpFired = false; cancelLp();
-                    if (h != null && h.id >= 40 && h.id <= 42) { // segurar o botão do carro: renomear
+                    if (h != null && h.id == 49) {
+                        // Pressão real por 3 segundos; ao soltar não executa o toque rápido também.
+                        lpTask = () -> {
+                            lpTask = null; lpFired = true; pressedId = -1;
+                            invalidate(); feedback(); openBrightnessQuickMenu();
+                        };
+                        handler.postDelayed(lpTask, 3000L);
+                    } else if (h != null && h.id >= 40 && h.id <= 42) { // segurar o botão do carro: renomear
                         final int idx = h.id - 40;
                         lpTask = () -> { lpTask = null; lpFired = true; pressedId = -1; invalidate(); feedback(); editVehicleButton(idx, null); };
                         handler.postDelayed(lpTask, 650);
