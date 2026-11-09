@@ -28,8 +28,8 @@ android {
         minSdk 26
         targetSdk 28
 
-        versionCode 118
-        versionName '1.18'
+        versionCode 128
+        versionName '1.28'
     }
 
     compileOptions {
