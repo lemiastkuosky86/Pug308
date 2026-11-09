@@ -26,7 +26,7 @@ import java.text.*;
 import java.util.*;
 
 /**
- * Peugeot 308 OEM Launcher v1.20
+ * Peugeot 308 OEM Launcher v1.23
  * - Visual "concessionária": superfícies planas, ícones vetoriais, tipografia em hierarquia
  * - Tema automático dia/noite (nascer/pôr do sol), escuro ou claro
  * - Estados de toque, escala uniforme (sem distorcer), cache de ícones, aceleração por hardware
@@ -42,6 +42,13 @@ public class MainActivity extends Activity {
     private String songTitle = "Nenhuma música em reprodução", songArtist = "Abra o Spotify para começar", mediaSource = "Spotify";
     private String userLyrics="", userLyricsSong="";
     private boolean lyricsOn=false;
+    private boolean speedPreferGps = true;
+    private boolean immersiveIdle = true;
+    private long lastHomeInteraction = SystemClock.uptimeMillis();
+    private String lyricsCacheKey = "", lyricsCacheText = "";
+    private boolean lyricsLoading = false;
+    private String radarError = "Ainda não consultado";
+    private int radarCount = 0;
     private Bitmap albumArt;
     private boolean mediaPlaying = false, mediaIsSpotify = true, mediaPermission = false;
     private long songDuration = 0, songPosBase = 0, songPosStamp = 0;
@@ -56,6 +63,7 @@ public class MainActivity extends Activity {
     private int accentBase = Color.rgb(0, 174, 255), accent = accentBase, onAccent = Color.WHITE;
     private boolean beep;
     private boolean volumeVisible;
+    private boolean userMuted = false; // Mudo acionado pelo botão, distinto de volume zero durante fade
     private boolean wifiConnected, btConnected;
 
     // ---- Tema ----
@@ -93,6 +101,9 @@ public class MainActivity extends Activity {
     private SoundEngine snd;      // v1.14: motor de som (equalizador, loudness, volume por velocidade)
     private Dialog eqDialog;
     private final int[] topSlot = {0, 4, 9}; // mini cards do topo: id do indicador (-1 = vazio)
+    // Visibilidade dos atalhos da barra superior (não altera o estado real de Wi-Fi/BT).
+    private boolean topBtVisible = true, topWifiVisible = true, topRadarVisible = true;
+    private boolean topPcVisible = true, topEqVisible = true, topVolumeVisible = true;
     private boolean alertSound = true, radarEnabled = false, overNow = false;
     private long lastOverAlert = 0;
     private String alertTitle = "", alertSub = "";
@@ -108,6 +119,18 @@ public class MainActivity extends Activity {
     private static final float SET_SCALE = 1.5f; // tamanho dos menus de configuração
     private boolean speedAlert = false;
     private int speedLimit = 110;
+    // 0 = apenas velocidade; 1 = visual; 2 = sonoro; 3 = visual e sonoro.
+    private int speedWarningMode = 3;
+    private boolean speedVisualOn() { return speedWarningMode == 1 || speedWarningMode == 3; }
+    private boolean speedSoundOn() { return speedWarningMode == 2 || speedWarningMode == 3; }
+    private void saveSpeedWarningMode(int mode) {
+        speedWarningMode = Math.max(0, Math.min(3, mode));
+        speedAlert = speedWarningMode != 0;
+        overNow = false;
+        getPreferences(0).edit().putInt("speed_warning_mode", speedWarningMode).putBoolean("speed_alert", speedAlert).apply();
+        refreshGpsNeed();
+        if (dashboard != null) dashboard.invalidate();
+    }
     private static final String DEFAULT_VEHICLE_ACTION = "com.peugeot308.oem.VEHICLE_COMMAND";
     private String vehicleAction = DEFAULT_VEHICLE_ACTION;
     private final String[] vbtnLabel = {"MENU", "PC BORDO", "VOLTAR"};
@@ -125,6 +148,7 @@ public class MainActivity extends Activity {
     private boolean obdLive = false;
     private String obdState = "Não configurado";
     private int lastSettingsTab = 0;
+    private final int[] lastSettingsScroll = new int[7];
     private boolean canConnected = false;
     private long lastCanPacket = 0;
     private final boolean[] vehicleVisible = {true, true, true, true, true, true, true, true, true, true, false};
@@ -155,14 +179,14 @@ public class MainActivity extends Activity {
             ArrayList<BluetoothDevice> devices = new ArrayList<>(a.getBondedDevices());
             if(devices.isEmpty()) { snack("Nenhum dispositivo Bluetooth pareado"); return; }
             String[] names = new String[devices.size()];
-            for(int i=0;i<devices.size();i++) { String nm=devices.get(i).getName(); names[i]=(nm==null||nm.isEmpty()?"Dispositivo sem nome":nm)+"  •  "+devices.get(i).getAddress(); }
-            showFixed(new AlertDialog.Builder(this).setTitle("Adaptador OBD2 Bluetooth")
+            for(int i=0;i<devices.size();i++) names[i]=devices.get(i).getName()+"  •  "+devices.get(i).getAddress();
+            new AlertDialog.Builder(this).setTitle("Adaptador OBD2 Bluetooth")
                 .setItems(names,(d,index)->{
                     obdAddress=devices.get(index).getAddress();
                     getPreferences(0).edit().putString("obd_address",obdAddress).apply();
                     if(vehicleDataSource == 1) useDataSource(1);
                     snack("Adaptador selecionado. Use Conectar OBD2.");
-                }).setNegativeButton("Cancelar",null).create());
+                }).setNegativeButton("Cancelar",null).show();
         }catch(SecurityException e){snack("Permita acesso ao Bluetooth nas configurações do Android");}
         catch(Exception e){snack("Falha ao listar dispositivos: "+e.getMessage());}
     }
@@ -171,8 +195,14 @@ public class MainActivity extends Activity {
            ? (jancarBridge == null ? "Serviço Jancar indisponível" : jancarBridge.diagnostic())
            : ("Fonte: OBD2 Bluetooth\nAdaptador: "+(obdAddress.isEmpty()?"não selecionado":obdAddress)
                +"\nEstado: "+obdState+"\nDados recentes: "+hasCanData());
-        showFixed(new AlertDialog.Builder(this).setTitle("Diagnóstico da fonte do veículo").setMessage(status)
-           .setPositiveButton("Fechar",null).create());
+        ScrollView scroll = new ScrollView(this);
+        TextView details = label(status, 14, cText, false);
+        details.setPadding(dp(20), dp(12), dp(20), dp(16));
+        details.setHorizontallyScrolling(false);
+        details.setBreakStrategy(android.text.Layout.BREAK_STRATEGY_HIGH_QUALITY);
+        scroll.addView(details);
+        new AlertDialog.Builder(this).setTitle("Diagnóstico da fonte do veículo").setView(scroll)
+           .setPositiveButton("Fechar",null).show();
     }
 
     // ---- GPS ----
@@ -184,8 +214,8 @@ public class MainActivity extends Activity {
     private final LocationListener gpsListener = new LocationListener() {
         @Override public void onLocationChanged(Location l) {
             gpsLastFix = SystemClock.elapsedRealtime();
-            float kmh = l.hasSpeed() ? l.getSpeed() * 3.6f : 0f;
-            gpsSpeedKmh = kmh < 2f ? 0f : kmh;
+            float kmh = l.hasSpeed() ? l.getSpeed() * 3.6f : -1f;
+            gpsSpeedKmh = kmh < 0 ? -1f : (kmh < 2f ? 0f : kmh);
             if (l.hasBearing() && kmh >= 4f) gpsBearing = l.getBearing();
             gpsAlt = l.hasAltitude() ? l.getAltitude() : Double.NaN;
             gpsLat = l.getLatitude(); gpsLon = l.getLongitude();
@@ -195,7 +225,7 @@ public class MainActivity extends Activity {
         @Override public void onProviderEnabled(String provider) {}
         @Override public void onProviderDisabled(String provider) {}
     };
-    private boolean needGps() { return weatherAuto || vehicleMenuEnabled || topWidgetEnabled || drivingEnabled || radarEnabled || speedAlert || (snd != null && snd.autoVolOn); }
+    private boolean needGps() { return weatherAuto || vehicleMenuEnabled || topWidgetEnabled || drivingEnabled || radarEnabled || speedAlert || speedPreferGps || (snd != null && snd.autoVolOn); }
     private boolean gpsFresh() { return gpsLastFix > 0 && SystemClock.elapsedRealtime() - gpsLastFix < 6000; }
     private void startGps() {
         if (gpsRunning || !needGps()) return;
@@ -217,6 +247,7 @@ public class MainActivity extends Activity {
     /** Valor real do indicador, ou null quando não há fonte de dados válida. */
     private String vehicleValue(int id) {
         if (id == 0) {
+            if (speedPreferGps && gpsFresh() && gpsSpeedKmh >= 0) return String.valueOf(Math.round(gpsSpeedKmh));
             if (hasCanData() && !"--".equals(vehicleValues[0])) return vehicleValues[0];
             return gpsFresh() && gpsSpeedKmh >= 0 ? String.valueOf(Math.round(gpsSpeedKmh)) : null;
         }
@@ -255,7 +286,6 @@ public class MainActivity extends Activity {
     private int previousVolume = 5;
     private int tickCount = 0;
     private Runnable rampTask;
-    private int rampTarget = -1;
     private ConnectivityManager.NetworkCallback netCallback;
     private String updateBase = DEFAULT_SERVER;
     private String ghRepo = "lemiastkuosky86/Pug308", notifiedVersion = ""; private int updateSource = 0; private boolean autoUpdate = true, updateChecking = false;
@@ -376,6 +406,8 @@ public class MainActivity extends Activity {
         drivingThreshold = Math.max(5, Math.min(60, prefs.getInt("driving_kmh", 10)));
         speedAlert = prefs.getBoolean("speed_alert", false);
         speedLimit = Math.max(30, Math.min(220, prefs.getInt("speed_limit", 110)));
+        speedWarningMode = Math.max(0, Math.min(3, prefs.getInt("speed_warning_mode", speedAlert ? 3 : 1)));
+        speedAlert = speedWarningMode != 0;
         int[] defSlots = {0, 4, 9};
         for (int i = 0; i < topSlot.length; i++) topSlot[i] = Math.max(-1, Math.min(10, prefs.getInt("top_slot_" + i, defSlots[i])));
         alertSound = prefs.getBoolean("alert_sound", true);
@@ -392,7 +424,16 @@ public class MainActivity extends Activity {
         vehicleDataSource = Math.max(0,Math.min(1,prefs.getInt("vehicle_source",0)));
         obdAddress = prefs.getString("obd_address", "");
         lastSettingsTab = Math.max(0,Math.min(6,prefs.getInt("last_settings_tab",0)));
+        for(int tab=0;tab<7;tab++)lastSettingsScroll[tab]=Math.max(0,prefs.getInt("settings_scroll_"+tab,0));
+        speedPreferGps = prefs.getBoolean("speed_prefer_gps",true);
+        immersiveIdle = prefs.getBoolean("immersive_idle",true);
         topWidgetEnabled = prefs.getBoolean("top_widget", true);
+        topBtVisible = prefs.getBoolean("top_show_bt", true);
+        topWifiVisible = prefs.getBoolean("top_show_wifi", true);
+        topRadarVisible = prefs.getBoolean("top_show_radar", true);
+        topPcVisible = prefs.getBoolean("top_show_pc", true);
+        topEqVisible = prefs.getBoolean("top_show_eq", true);
+        topVolumeVisible = prefs.getBoolean("top_show_volume", true);
         for (int i = 0; i < vehicleVisible.length; i++) vehicleVisible[i] = prefs.getBoolean("vehicle_visible_" + i, i != 10);
         // Migração: até quatro indicadores visíveis, incluindo velocidade.
         int visibleCount = 0;
@@ -426,7 +467,6 @@ public class MainActivity extends Activity {
         obdReader = new ObdBluetoothReader((values, live, stateText) -> {
             obdState = stateText; obdLive = live;
             if(vehicleDataSource != 1) return;
-            if(!live) Arrays.fill(vehicleValues, "--"); // sem leitura confirmada não mostra valor antigo
             if(values != null && live) {
                 for(int i=0;i<Math.min(values.length,vehicleValues.length);i++)
                     if(values[i] != null) vehicleValues[i] = values[i];
@@ -454,10 +494,6 @@ public class MainActivity extends Activity {
     @Override protected void onResume() { super.onResume(); if (pendingInstall != null && getPackageManager().canRequestPackageInstalls()) { Uri pu = pendingInstall; pendingInstall = null; installApk(pu); } startGps(); if (snd != null) snd.start(); applyBrightness(); lastCandStamp = 0; if (dashboard != null) { dashboard.clearIcons(); dashboard.invalidate(); } }
     @Override protected void onPause() { if (snd == null || !snd.autoVolOn) stopGps(); super.onPause(); }
     @Override protected void onDestroy() {
-        if (rampTask != null) { // não deixa o volume preso no meio do fade/mudo
-            try { audio.setStreamVolume(AudioManager.STREAM_MUSIC, rampTarget, 0); } catch (Exception ignored) {}
-            rampTask = null;
-        }
         try { if (eqDialog != null) eqDialog.dismiss(); } catch (Exception ignored) {}
         if (snd != null) snd.saveNow();
         if (jancarBridge != null) jancarBridge.stop();
@@ -481,7 +517,11 @@ public class MainActivity extends Activity {
     private final Runnable shineTick = new Runnable() {
         public void run() {
             long m = SystemClock.uptimeMillis() % SHINE_PERIOD;
-            if (dashboard != null && m < SHINE_MS && !volumeVisible) dashboard.invalidateHeader();
+            // Atualiza a piscada vermelha da velocidade crítica, inclusive fora do brilho do logotipo.
+            boolean criticalSpeedCard = topWidgetEnabled && speedVisualOn() && speedNow() > speedLimit * 1.15f;
+            boolean speedCardShown = false;
+            for (int id : topSlot) if (id == 0) { speedCardShown = true; break; }
+            if (dashboard != null && ((m < SHINE_MS && !volumeVisible) || (criticalSpeedCard && speedCardShown))) dashboard.invalidateHeader();
             handler.postDelayed(this, m < SHINE_MS ? 40 : Math.min(400, SHINE_PERIOD - m));
         }
     };
@@ -512,7 +552,8 @@ public class MainActivity extends Activity {
             if (v > speedLimit) {
                 if (!overNow || nowEl - lastOverAlert > 30000) {
                     overNow = true; lastOverAlert = nowEl;
-                    showAlert(1, "VELOCIDADE ACIMA DO LIMITE", Math.round(v) + " km/h  •  limite " + speedLimit + " km/h", 4000, true);
+                    if (speedVisualOn()) showAlert(1, "VELOCIDADE ACIMA DO LIMITE", Math.round(v) + " km/h  •  limite " + speedLimit + " km/h", 4000, speedSoundOn());
+                    else if (speedSoundOn() && alertSound) { alertKind = 1; alertBeep(); }
                 }
             } else if (v <= speedLimit - 2) overNow = false;
         } else overNow = false;
@@ -533,15 +574,22 @@ public class MainActivity extends Activity {
         boolean first = last == null || nowEl - last > 300000;
         if (first) radarAlerted.put(id, nowEl);
         String lim = bestR[2] > 0 ? "  •  limite " + (int) bestR[2] + " km/h" : "";
-        showAlert(0, "RADAR À FRENTE", (Math.round(best / 10) * 10) + " m" + lim, 3500, first);
+        if (first) showAlert(0, "RADAR À FRENTE", (Math.round(best / 10) * 10) + " m" + lim, 3500, true);
     }
     /** Radares do OpenStreetMap (highway=speed_camera) num raio de 7 km, via Overpass. Experimental: depende da cobertura do mapa. */
     private void fetchRadars(final double lat, final double lon) {
         radarFetching = true; radarFetchAt = SystemClock.elapsedRealtime();
         new Thread(() -> {
             try {
-                String q = "[out:json][timeout:20];node(around:7000," + lat + "," + lon + ")[\"highway\"=\"speed_camera\"];out;";
-                JSONArray el = readJson("https://overpass-api.de/api/interpreter?data=" + URLEncoder.encode(q, "UTF-8")).getJSONArray("elements");
+                String q = "[out:json][timeout:20];(node(around:7000," + lat + "," + lon + ")[\"highway\"=\"speed_camera\"];node(around:7000," + lat + "," + lon + ")[\"enforcement\"=\"maxspeed\"];);out;";
+                JSONArray el=null; Exception lastFailure=null;
+                // Espelhos gratuitos da mesma base OSM: redundância, não bases independentes.
+                String[] mirrors={"https://overpass.kumi.systems/api/interpreter?data=", "https://overpass-api.de/api/interpreter?data="};
+                for(String endpoint:mirrors) {
+                    try { el=readJson(endpoint+URLEncoder.encode(q,"UTF-8")).getJSONArray("elements"); break; }
+                    catch(Exception error){ lastFailure=error; }
+                }
+                if(el==null) throw lastFailure==null?new IOException("Sem resposta Overpass"):lastFailure;
                 final ArrayList<double[]> list = new ArrayList<>();
                 for (int i = 0; i < el.length(); i++) {
                     JSONObject o = el.getJSONObject(i); double lim = 0;
@@ -549,8 +597,8 @@ public class MainActivity extends Activity {
                     if (tags != null) { try { lim = Double.parseDouble(tags.optString("maxspeed", "").replaceAll("[^0-9.]", "")); } catch (Exception ignored) {} }
                     list.add(new double[]{o.getDouble("lat"), o.getDouble("lon"), lim, o.getLong("id")});
                 }
-                handler.post(() -> { radars.clear(); radars.addAll(list); radarFetchLat = lat; radarFetchLon = lon; radarFetching = false; });
-            } catch (Exception e) { handler.post(() -> radarFetching = false); }
+                handler.post(() -> { radars.clear(); radars.addAll(list); radarCount=list.size();radarError="Atualizado"; radarFetchLat = lat; radarFetchLon = lon; radarFetching = false; });
+            } catch (Exception e) { handler.post(() -> { radarError="Falha de rede / servidor";radarFetching = false; }); }
         }).start();
     }
 
@@ -798,27 +846,77 @@ public class MainActivity extends Activity {
     }
     private void vehicleOptionsMenu() {
         String[] options={"Escolher indicadores", "Exibir/ocultar painel do veículo", "Abrir informações da Jancar", "Configurar fonte CANBUS / OBD2"};
-        showFixed(new AlertDialog.Builder(this).setTitle("Computador de bordo")
-           .setItems(options,(d,which)->{
-               if(which==0){settings(3);}
-               else if(which==1){vehicleMenuEnabled=!vehicleMenuEnabled;getPreferences(0).edit().putBoolean("vehicle_menu",vehicleMenuEnabled).apply();dashboard.invalidate();}
-               else if(which==2){openJancarApp(true);}
-               else {settings(3);}
-           }).setNegativeButton("Fechar",null).create());
+        LinearLayout buttons=vertical();buttons.setPadding(dp(20),dp(14),dp(20),dp(14));
+        AlertDialog dialog=new AlertDialog.Builder(this).setTitle("PC DE BORDO • PEUGEOT")
+            .setView(buttons).setNegativeButton("Fechar",null).create();
+        for(int i=0;i<options.length;i++) {
+            final int item=i; Button btn=new Button(this);btn.setText(options[i]);btn.setAllCaps(false);
+            btn.setTextColor(cText);btn.setBackgroundTintList(android.content.res.ColorStateList.valueOf(cSurf2));
+            buttons.addView(btn,new LinearLayout.LayoutParams(-1,dp(52)));
+            btn.setOnClickListener(v->{dialog.dismiss();
+               if(item==0){settings(3);}
+               else if(item==1){vehicleMenuEnabled=!vehicleMenuEnabled;getPreferences(0).edit().putBoolean("vehicle_menu",vehicleMenuEnabled).apply();refreshGpsNeed();dashboard.invalidate();}
+               else if(item==2){openJancarApp(true);}else{settings(3);}
+            });
+        }
+        dialog.show();
     }
-    private void openLyrics(){
-        String now=songTitle == null?"":songTitle;
-        boolean match=now.equalsIgnoreCase(userLyricsSong) && !userLyrics.trim().isEmpty();
-        LinearLayout body=vertical();body.setPadding(dp(18),dp(14),dp(18),dp(12));
-        body.addView(label(match?"Letra para: "+now:"Sem letra cadastrada para: "+now,17,cText,true));
-        TextView text=label(match?userLyrics:"A sessão de mídia não fornece letras de músicas. Você pode inserir letras que tenha direito de usar.",15,cMuted,false);
-        text.setGravity(Gravity.TOP);text.setPadding(0,dp(14),0,dp(14));body.addView(text);
-        ScrollView wrap=new ScrollView(this);wrap.addView(body);
-        showFixed(new AlertDialog.Builder(this).setTitle("Spotify • Letras")
-            .setView(wrap).setPositiveButton("Fechar",null)
-            .setNeutralButton("Inserir texto",(d,i)->popupInput("Letras fornecidas por você","Cole texto de sua autoria ou autorizado",match?userLyrics:"",v->{
-                userLyrics=v;userLyricsSong=now;getPreferences(0).edit().putString("lyrics_text",v).putString("lyrics_song",now).apply();
-            })).create());
+    /** A API de sessão do Spotify não entrega letras. Busca opcional via LRCLIB e fallback manual. */
+    private void openLyrics() {
+        final String title = songTitle == null ? "" : songTitle.trim();
+        final String artist = songArtist == null ? "" : songArtist.trim();
+        final String key = title + " • " + artist;
+        final boolean ownMatch = title.equalsIgnoreCase(userLyricsSong) && !userLyrics.trim().isEmpty();
+        LinearLayout body = vertical(); body.setPadding(dp(18),dp(12),dp(18),dp(12));
+        TextView heading=label(title+" — "+artist,17,cText,true); body.addView(heading);
+        TextView content=label("",15,cText,false);
+        content.setGravity(Gravity.TOP); content.setPadding(0,dp(12),0,dp(16));
+        body.addView(content);
+        ScrollView scrolling=new ScrollView(this); scrolling.addView(body);
+        AlertDialog dialog=new AlertDialog.Builder(this)
+            .setTitle("Spotify • Letras")
+            .setView(scrolling)
+            .setPositiveButton("Fechar",null)
+            .setNegativeButton("Abrir Spotify",(d,i)->launch(2))
+            .setNeutralButton("Inserir letra",(d,i)->popupInput("Letras autorizadas","Cole texto de sua autoria ou autorizado",ownMatch?userLyrics:"",v->{
+                userLyrics=v;userLyricsSong=title;getPreferences(0).edit().putString("lyrics_text",v).putString("lyrics_song",title).apply();
+            })).create();
+        dialog.show();
+        if (ownMatch) { content.setText(userLyrics); return; }
+        if (title.isEmpty() || title.startsWith("Nenhuma música") || artist.isEmpty()) {
+            content.setText("Abra o Spotify e toque uma música. Ative também o acesso às notificações para reconhecer título e artista.");
+            return;
+        }
+        if (key.equals(lyricsCacheKey) && !lyricsCacheText.isEmpty()) {
+            content.setText(lyricsCacheText+"\n\nFonte: LRCLIB • conteúdo fornecido por terceiros"); return;
+        }
+        content.setText("Buscando letra em LRCLIB… (requer internet)\n\nA busca não utiliza uma API oficial do Spotify.");
+        new Thread(()->{
+            String result=null;
+            try {
+                String url="https://lrclib.net/api/get?track_name="+URLEncoder.encode(title,"UTF-8")+
+                    "&artist_name="+URLEncoder.encode(artist,"UTF-8");
+                JSONObject data=readJson(url);
+                if(!data.optBoolean("instrumental",false)) {
+                    result=data.optString("plainLyrics","");
+                    if(result.isEmpty() || "null".equals(result)) result=plainFromLrc(data.optString("syncedLyrics",""));
+                } else result="Faixa instrumental (sem letra).";
+            } catch(Exception ignored) {}
+            final String textResult=result;
+            handler.post(()->{
+                if(!dialog.isShowing()) return;
+                if(textResult==null || textResult.trim().isEmpty()) {
+                    content.setText("Letra não encontrada nesta fonte ou conexão indisponível.\n\nUse 'Abrir Spotify' para tentar a letra no app original, ou 'Inserir letra' para um texto autorizado.");
+                } else {
+                    lyricsCacheKey=key; lyricsCacheText=textResult;
+                    content.setText(textResult+"\n\nFonte: LRCLIB • conteúdo fornecido por terceiros");
+                }
+            });
+        },"lyrics-lrclib").start();
+    }
+    private String plainFromLrc(String lrc) {
+        if(lrc==null || lrc.trim().isEmpty()) return "";
+        return lrc.replaceAll("(?m)\\[\\d{1,2}:\\d{2}(?:\\.\\d+)?\\]", "").trim();
     }
     private void editVehicleButton(int i, Runnable after) {
         promptText("Nome do botão " + (i + 1), "Ex.: MENU", vbtnLabel[i], lb -> {
@@ -911,50 +1009,71 @@ public class MainActivity extends Activity {
     private void adjustVolume(int delta) {
         try {
             cancelRamp();
-            int v = audio.getStreamVolume(AudioManager.STREAM_MUSIC), max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC);
+            // No MUDO, +/- alteram apenas o volume que será restaurado;
+            // não tiram o carro do mudo sem intenção.
+            int v = audio.getStreamVolume(AudioManager.STREAM_MUSIC);
+            int max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC);
+            if (userMuted) {
+                previousVolume = Math.max(1, Math.min(max, previousVolume + delta));
+                if (dashboard != null) dashboard.invalidate();
+                return;
+            }
             int next = Math.max(0, Math.min(max, v + delta));
             audio.setStreamVolume(AudioManager.STREAM_MUSIC, next, 0);
             if (snd != null) snd.volumeChanged();
             if (next > 0) previousVolume = next;
-            if (v == 0 && next > 0) { volumeVisible = false; dashboard.invalidate(); } else showVolume();
+            showVolume();
         } catch (Exception e) { snack("Volume indisponível"); }
     }
-    /** Mudo: desce rápido até 0; ao desmutar sobe aos poucos até o volume anterior (sem susto). */
+    /** Mudo com aviso persistente: descida curta e retorno gradual de 1,5 segundo. */
     private void toggleMute() {
         try {
             cancelRamp();
             int v = audio.getStreamVolume(AudioManager.STREAM_MUSIC);
-            if (v > 0) {
+            if (!userMuted && v > 0) {
                 previousVolume = v;
-                rampVolume(0, 450, () -> showVolume());
+                userMuted = true;
+                showVolume();
+                rampVolume(0, 450, null);
             } else {
-                volumeVisible = false; dashboard.invalidate();
-                rampVolume(Math.max(1, previousVolume), 1800, null);
+                userMuted = false;
+                // O MUDO só desaparece depois que começa a restauração gradual.
+                rampVolume(Math.max(1, previousVolume), 1500, () -> showVolume());
+                showVolume();
             }
         } catch (Exception ignored) {}
     }
     private void rampVolume(final int target, final int totalMs, final Runnable done) {
         cancelRamp();
-        rampTarget = target;
         final int from = audio.getStreamVolume(AudioManager.STREAM_MUSIC), steps = Math.abs(target - from);
         if (steps == 0) { if (done != null) done.run(); return; }
         final int dir = target > from ? 1 : -1;
-        final double e = dir > 0 ? 1.6 : 1.0; // subida em curva suave: começa devagar
+        final double e = dir > 0 ? 1.6 : 1.0; // subida suave, começa devagar
         rampTask = new Runnable() {
             int k = 0;
             public void run() {
                 k++;
-                try { audio.setStreamVolume(AudioManager.STREAM_MUSIC, from + dir * k, 0); if (snd != null) snd.volumeChanged(); } catch (Exception ignored) {}
+                try {
+                    audio.setStreamVolume(AudioManager.STREAM_MUSIC, from + dir * k, 0);
+                    if (snd != null) snd.volumeChanged();
+                } catch (Exception ignored) {}
+                if (dashboard != null) dashboard.invalidate();
                 if (k >= steps) { rampTask = null; if (done != null) done.run(); return; }
-                double tNow = totalMs * Math.pow((double) k / steps, 1.0 / e), tNext = totalMs * Math.pow((double) (k + 1) / steps, 1.0 / e);
+                double tNow = totalMs * Math.pow((double) k / steps, 1.0 / e);
+                double tNext = totalMs * Math.pow((double) (k + 1) / steps, 1.0 / e);
                 handler.postDelayed(this, Math.max(30, (long) (tNext - tNow)));
             }
         };
         handler.postDelayed(rampTask, 30);
     }
     private void cancelRamp() { if (rampTask != null) { handler.removeCallbacks(rampTask); rampTask = null; } }
-    private void showVolume() { volumeVisible = true; volumeUntil = SystemClock.uptimeMillis() + 3200; dashboard.invalidate(); }
-    private boolean isMuted() { return audio.getStreamVolume(AudioManager.STREAM_MUSIC) == 0; }
+    /** Indicador normal temporário; painel MUDO permanece fixo até desativação explícita. */
+    private void showVolume() {
+        volumeVisible = true;
+        volumeUntil = SystemClock.uptimeMillis() + 2000;
+        if (dashboard != null) dashboard.invalidate();
+    }
+    private boolean isMuted() { return userMuted || audio.getStreamVolume(AudioManager.STREAM_MUSIC) == 0; }
 
     // ---------------------------------------------------------------- mídia (Spotify primeiro; senão qualquer sessão ativa)
     private void updateMedia() {
@@ -1044,15 +1163,9 @@ public class MainActivity extends Activity {
         getPreferences(0).edit().putString("pinned_apps", android.text.TextUtils.join(",", pinnedPackages)).apply();
         lastCandStamp = 0; dashboard.invalidate();
     }
-    private final HashMap<String, String> labelCache = new HashMap<>();
     private String appLabel(String pkg) {
-        String cached = labelCache.get(pkg);
-        if (cached != null) return cached;
-        String label;
-        try { label = getPackageManager().getApplicationLabel(getPackageManager().getApplicationInfo(pkg, 0)).toString(); }
-        catch (Exception ex) { return pkg; } // falha não entra no cache: o app pode ser instalado depois
-        labelCache.put(pkg, label);
-        return label;
+        try { return getPackageManager().getApplicationLabel(getPackageManager().getApplicationInfo(pkg, 0)).toString(); }
+        catch (Exception ex) { return pkg; }
     }
     private void launchPackage(String pkg) {
         try { Intent intent = getPackageManager().getLaunchIntentForPackage(pkg); if (intent == null) throw new Exception(); noteRecent(pkg); startActivity(intent); }
@@ -1095,13 +1208,6 @@ public class MainActivity extends Activity {
         if (w == null) return;
         w.getDecorView().setSystemUiVisibility(getWindow().getDecorView().getSystemUiVisibility());
         w.clearFlags(WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE);
-    }
-    /** Mostra um diálogo padrão do Android sem reabrir a barra de navegação (mesmo cuidado dos popups do launcher). */
-    private void showFixed(Dialog d) {
-        Window w = d.getWindow();
-        if (w != null) w.setFlags(WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE, WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE);
-        d.show();
-        if (w != null) immersiveFix(w);
     }
     /** Janelas grandes (Configurações, Apps): ocupam uma fração da tela, centralizadas. */
     private void showBig(Dialog d, float wFrac, float hFrac) {
@@ -1212,10 +1318,7 @@ public class MainActivity extends Activity {
         ArrayList<android.content.pm.ResolveInfo> apps = new ArrayList<>();
         Intent query = new Intent(Intent.ACTION_MAIN); query.addCategory(Intent.CATEGORY_LAUNCHER);
         apps.addAll(getPackageManager().queryIntentActivities(query, 0));
-        final PackageManager pm = getPackageManager();
-        final HashMap<android.content.pm.ResolveInfo, String> labels = new HashMap<>();
-        for (android.content.pm.ResolveInfo ri : apps) labels.put(ri, ri.loadLabel(pm).toString());
-        Collections.sort(apps, (a, b) -> labels.get(a).compareToIgnoreCase(labels.get(b)));
+        Collections.sort(apps, (a, b) -> a.loadLabel(getPackageManager()).toString().compareToIgnoreCase(b.loadLabel(getPackageManager()).toString()));
         LinearLayout root = vertical(); root.setPadding(dp(20), dp(14), dp(20), dp(16)); root.setBackground(panel(cBg1, 20));
         LinearLayout header = new LinearLayout(this); header.setGravity(Gravity.CENTER_VERTICAL);
         header.addView(label("APLICATIVOS", 22, cText, true), new LinearLayout.LayoutParams(0, dp(48), 1));
@@ -1239,7 +1342,7 @@ public class MainActivity extends Activity {
             String filter = search.getText().toString().trim().toLowerCase(Locale.getDefault());
             for (android.content.pm.ResolveInfo info : apps) {
                 String pkg = info.activityInfo.packageName;
-                String name = labels.get(info);
+                String name = info.loadLabel(getPackageManager()).toString();
                 if (!name.toLowerCase(Locale.getDefault()).contains(filter)) continue;
                 shown++;
                 LinearLayout item = new LinearLayout(this); item.setGravity(Gravity.CENTER_VERTICAL);
@@ -1338,10 +1441,47 @@ public class MainActivity extends Activity {
             .setNegativeButton("Atualizar", null)
             .create();
         dialog.setOnShowListener(d -> dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setOnClickListener(v -> report.setText(diagnosticReport())));
-        showFixed(dialog);
+        dialog.show();
     }
 
     // ---------------------------------------------------------------- configurações (abas, sem rolagem)
+    /** Configuração rápida do card, acessível com um toque no topo. Não interfere no radar. */
+    private void openSpeedCardMenu() {
+        if (drivingMode || (gpsFresh() && speedNow() > 5)) {
+            snack("Ajuste os avisos com o veículo estacionado");
+            return;
+        }
+        feedback();
+        LinearLayout root = vertical();
+        root.setPadding(dp(24), dp(20), dp(24), dp(18));
+        root.setBackground(panel(cBg1, 20));
+        root.addView(label("VELOCIDADE  /  AVISOS", 22, cText, true));
+        root.addView(label("Configuração rápida do mini-card • velocidade GPS ou fonte selecionada", 12, cMuted, false));
+        divider(root);
+        stepperRow(root, "Avisar acima de", speedLimit, 30, 220, 5, " km/h", value -> {
+            speedLimit = value;
+            overNow = false;
+            getPreferences(0).edit().putInt("speed_limit", value).apply();
+            if (dashboard != null) dashboard.invalidate();
+        });
+        choiceRow(root, "Tipo de aviso", new String[]{"Só velocidade", "Visual", "Sonoro", "Visual + som"}, speedWarningMode, this::saveSpeedWarningMode);
+        root.addView(label("Visual: vermelho acima do limite e piscando acima de 15%. Sonoro: toque de alerta, sem precisar deixar o card vermelho.", 12, cMuted, false));
+        root.addView(label("O alerta de velocidade é independente dos avisos de radar. Os sons também respeitam a opção geral de áudio em Alertas.", 12, cDim, false));
+        LinearLayout actions = new LinearLayout(this);
+        actions.setGravity(Gravity.END);
+        root.addView(actions, new LinearLayout.LayoutParams(-1, dp(55)));
+        Dialog dialog = new Dialog(this);
+        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
+        actionButton(actions, "CONCLUÍDO", dialog::dismiss);
+        dialog.setContentView(root);
+        if (dialog.getWindow() != null) {
+            dialog.getWindow().setBackgroundDrawableResource(android.R.color.transparent);
+            dialog.getWindow().setLayout(Math.min(dp(790), getResources().getDisplayMetrics().widthPixels - dp(24)), WindowManager.LayoutParams.WRAP_CONTENT);
+        }
+        dialog.show();
+        if (dialog.getWindow() != null) dialog.getWindow().setLayout(Math.min(dp(790), getResources().getDisplayMetrics().widthPixels - dp(24)), WindowManager.LayoutParams.WRAP_CONTENT);
+    }
+
     private void settings() { settings(lastSettingsTab); }
     private void settings(int initialTab) {
         feedback();
@@ -1361,7 +1501,8 @@ public class MainActivity extends Activity {
         lastSettingsTab = current[0];
         Runnable[] redraw = new Runnable[1];
         redraw[0] = () -> {
-            final int keepY = shownTab[0] == current[0] ? pageScroll.getScrollY() : 0;
+            if(shownTab[0]>=0) lastSettingsScroll[shownTab[0]]=pageScroll.getScrollY();
+            final int keepY = shownTab[0] == current[0] ? pageScroll.getScrollY() : lastSettingsScroll[current[0]];
             shownTab[0] = current[0];
             tabs.removeAllViews(); page.removeAllViews();
             for (int i = 0; i < titles.length; i++) {
@@ -1378,6 +1519,31 @@ public class MainActivity extends Activity {
             switch (current[0]) {
                 case 0: {
                     section(page, "APARÊNCIA", "32 temas prontos (preto, cinza chumbo e cores), claro/escuro, capa do álbum e brilho");
+                    section(page,"BARRA SUPERIOR", "Escolha quais botões ficam visíveis. Configurações permanece sempre acessível.");
+                    switchRow(page,"Mostrar botão Volume",topVolumeVisible,(v,checked)->{
+                        topVolumeVisible=checked;getPreferences(0).edit().putBoolean("top_show_volume",checked).apply();dashboard.invalidate();
+                    });
+                    switchRow(page,"Mostrar Bluetooth",topBtVisible,(v,checked)->{
+                        topBtVisible=checked;getPreferences(0).edit().putBoolean("top_show_bt",checked).apply();dashboard.invalidate();
+                    });
+                    switchRow(page,"Mostrar Wi-Fi",topWifiVisible,(v,checked)->{
+                        topWifiVisible=checked;getPreferences(0).edit().putBoolean("top_show_wifi",checked).apply();dashboard.invalidate();
+                    });
+                    switchRow(page,"Mostrar Radar",topRadarVisible,(v,checked)->{
+                        topRadarVisible=checked;getPreferences(0).edit().putBoolean("top_show_radar",checked).apply();dashboard.invalidate();
+                    });
+                    switchRow(page,"Mostrar PC de bordo (quando painel oculto)",topPcVisible,(v,checked)->{
+                        topPcVisible=checked;getPreferences(0).edit().putBoolean("top_show_pc",checked).apply();dashboard.invalidate();
+                    });
+                    switchRow(page,"Mostrar equalizador (quando painel visível)",topEqVisible,(v,checked)->{
+                        topEqVisible=checked;getPreferences(0).edit().putBoolean("top_show_eq",checked).apply();dashboard.invalidate();
+                    });
+                    page.addView(label("Estas opções escondem apenas os botões da barra, não desligam Bluetooth, Wi-Fi ou os serviços do veículo.",12,cMuted,false));
+                    divider(page);
+                    switchRow(page,"Recolher atalhos após 10 s sem tocar",immersiveIdle,(v,checked)->{
+                        immersiveIdle=checked;getPreferences(0).edit().putBoolean("immersive_idle",checked).apply();
+                        lastHomeInteraction=SystemClock.uptimeMillis();dashboard.invalidate();
+                    });
                     page.addView(label("Cor do tema: " + PRESET_NAMES[presetIndex], 15, cText, true));
                     LinearLayout titleRow=new LinearLayout(this);page.addView(titleRow);
                     titleRow.addView(label("Texto superior: "+brandTitle,14,cText,false),new LinearLayout.LayoutParams(0,dp(45),1));
@@ -1470,7 +1636,7 @@ public class MainActivity extends Activity {
                         useDataSource(index);redraw[0].run();
                     });
                     if(vehicleDataSource == 1) {
-                        box.addView(label("OBD2 Bluetooth clássico: RPM, velocidade, temperatura do motor, combustível e temperatura externa (quando suportados). Não altera a configuração da CANBOX.",12,cMuted,false));
+                        box.addView(label("OBD2 Bluetooth clássico: RPM, velocidade, temperatura do motor e combustível (quando suportados). Não altera a configuração da CANBOX.",12,cMuted,false));
                         LinearLayout obdActions=new LinearLayout(this);box.addView(obdActions,new LinearLayout.LayoutParams(-1,dp(54)));
                         actionButton(obdActions,"Escolher adaptador",()->chooseObdAdapter());
                         actionButton(obdActions,"Conectar OBD2",()->{
@@ -1502,7 +1668,7 @@ public class MainActivity extends Activity {
                             .setNegativeButton("Atualizar",null).create();
                         d.setOnShowListener(v->d.getButton(AlertDialog.BUTTON_NEGATIVE)
                             .setOnClickListener(btn->report.setText(jancarBridge.diagnostic())));
-                        showFixed(d);
+                        d.show();
                         handler.postDelayed(()->{if(d.isShowing())report.setText(jancarBridge.diagnostic());},800);
                     });
                     actionButton(jancarActions, "Abrir app do veículo", () -> openJancarApp(true));
@@ -1510,7 +1676,7 @@ public class MainActivity extends Activity {
                     box.addView(label("Rádio e volante continuam pelo sistema original até que os contratos da MCU/CAN sejam confirmados.", 12, cMuted, false));
                     divider(box);
                     switchRow(box, "Menu do veículo (3 botões + dados na 3ª coluna)", vehicleMenuEnabled, (v, checked) -> {
-                        vehicleMenuEnabled = checked; getPreferences(0).edit().putBoolean("vehicle_menu", checked).apply(); refreshGpsNeed();
+                        vehicleMenuEnabled = checked; getPreferences(0).edit().putBoolean("vehicle_menu", checked).apply(); refreshGpsNeed(); dashboard.invalidate();
                     });
                     box.addView(label("Desligado (padrão): relógio/clima e Spotify ocupam a tela inteira, o próprio launcher se ajusta.", 12, cMuted, false));
                     switchRow(box,"Mostrar acesso ao computador de bordo sem widget",standaloneVehicleButton,(v,checked)->{
@@ -1540,13 +1706,28 @@ public class MainActivity extends Activity {
                     switchRow(box, "Mostrar mini cards no topo", topWidgetEnabled, (v, checked) -> {
                         topWidgetEnabled = checked; getPreferences(0).edit().putBoolean("top_widget", checked).apply(); refreshGpsNeed();
                     });
-                    String[] topOpts = new String[vehicleNames.length + 1]; topOpts[0] = "Nenhum";
+                    box.addView(label("Cada mini card pode ser desligado separadamente. Com os três em Desligado, nenhum card aparece no topo.", 12, cMuted, false));
+                    String[] topOpts = new String[vehicleNames.length + 1]; topOpts[0] = "Desligado (não mostrar)";
                     for (int oi = 0; oi < vehicleNames.length; oi++) topOpts[oi + 1] = vehicleNames[oi];
                     for (int si = 0; si < topSlot.length; si++) {
                         final int slot = si;
                         choiceRow(box, "Card " + (si + 1), topOpts, topSlot[si] + 1, idx -> { topSlot[slot] = idx - 1; getPreferences(0).edit().putInt("top_slot_" + slot, topSlot[slot]).apply(); dashboard.invalidate(); });
                     }
-                    box.addView(label("RPM, temperaturas e combustível vêm do CANBUS ou do OBD2 (quando o carro suporta); sem fonte o card mostra --. Consumo e autonomia ainda não vêm do OBD2. O limite de velocidade fica em Alertas.", 12, cMuted, false));
+                    LinearLayout clearCardsRow = new LinearLayout(this);
+                    box.addView(clearCardsRow, new LinearLayout.LayoutParams(-1, dp(49)));
+                    actionButton(clearCardsRow, "Desligar os 3 mini cards", () -> {
+                        android.content.SharedPreferences.Editor editor = getPreferences(0).edit();
+                        for (int i = 0; i < topSlot.length; i++) { topSlot[i] = -1; editor.putInt("top_slot_" + i, -1); }
+                        editor.apply(); dashboard.invalidate(); redraw[0].run();
+                    });
+                    box.addView(label("Temperatura/RPM/consumo dependem do CANBUS ou OBD2; sem dados válidos mostra --.", 12, cMuted, false));
+                    box.addView(label("Toque no card VELOCIDADE na tela inicial para definir limite, alerta visual, sonoro ou somente leitura. O vermelho e a piscada de 15% dependem do modo visual.", 12, cMuted, false));
+                    stepperRow(box, "Limite de velocidade do mini card", speedLimit, 30, 220, 5, " km/h", val -> {
+                        speedLimit = val; getPreferences(0).edit().putInt("speed_limit", val).apply(); dashboard.invalidate();
+                    });
+                    switchRow(box,"Priorizar GPS para mostrar velocidade",speedPreferGps,(v,checked)->{
+                        speedPreferGps=checked;getPreferences(0).edit().putBoolean("speed_prefer_gps",checked).apply();refreshGpsNeed();dashboard.invalidate();
+                    });
                     divider(box);
                     box.addView(label("Modo direção", 14, accent, true));
                     switchRow(box, "Esconder apps e configurações em movimento", drivingEnabled, (v, checked) -> {
@@ -1587,7 +1768,7 @@ public class MainActivity extends Activity {
                 }
                 case 4: {
                     section(page, "ALERTAS", "Limite de velocidade e radares, com popup e som");
-                    switchRow(page, "Alerta ao passar do limite de velocidade", speedAlert, (v, checked) -> { speedAlert = checked; getPreferences(0).edit().putBoolean("speed_alert", checked).apply(); overNow = false; refreshGpsNeed(); });
+                    switchRow(page, "Alerta ao passar do limite de velocidade", speedAlert, (v, checked) -> { saveSpeedWarningMode(checked ? (speedWarningMode == 0 ? 3 : speedWarningMode) : 0); });
                     stepperRow(page, "Limite de velocidade", speedLimit, 30, 220, 10, " km/h", val -> { speedLimit = val; getPreferences(0).edit().putInt("speed_limit", val).apply(); dashboard.invalidate(); });
                     switchRow(page, "Avisar radares à frente (experimental, usa internet)", radarEnabled, (v, checked) -> {
                         radarEnabled = checked; getPreferences(0).edit().putBoolean("radar_alert", checked).apply();
@@ -1598,7 +1779,7 @@ public class MainActivity extends Activity {
                     actionButton(alertTests, "Testar radar", () -> { drivingTestUntil = 0; showAlert(0, "RADAR À FRENTE", "350 m  •  limite 60 km/h", 5000, true); });
                     actionButton(alertTests, "Testar velocidade", () -> showAlert(1, "VELOCIDADE ACIMA DO LIMITE", (speedLimit + 12) + " km/h  •  limite " + speedLimit + " km/h", 5000, true));
                     page.addView(label("O popup aparece com o launcher na tela. Com outro app na frente (ex.: Waze) estes alertas não aparecem; para isso deixe o Radarbot ou o próprio Waze avisando em segundo plano.", 12, cMuted, false));
-                    page.addView(label("Radares vêm do OpenStreetMap e a cobertura varia por região; não substitui um app de radares dedicado.", 12, cMuted, false));
+                    page.addView(label("Radares: "+radarCount+" pontos próximos • "+radarError+". Duas rotas alternativas para consultar a mesma base OSM; não garante cobertura completa. Para avisos com Waze em primeiro plano, use um aplicativo de radares próprio.", 12, cMuted, false));
                     break;
                 }
                 case 5: {
@@ -1646,7 +1827,13 @@ public class MainActivity extends Activity {
         redraw[0].run();
         AlertDialog dialog = new AlertDialog.Builder(this).setView(root).create();
         activeDialog = dialog;
-        dialog.setOnDismissListener(d -> { if (activeDialog == dialog) activeDialog = null; });
+        dialog.setOnDismissListener(d -> {
+            lastSettingsScroll[current[0]]=pageScroll.getScrollY();
+            android.content.SharedPreferences.Editor edit=getPreferences(0).edit().putInt("last_settings_tab",current[0]);
+            for(int tab=0;tab<7;tab++)edit.putInt("settings_scroll_"+tab,lastSettingsScroll[tab]);
+            edit.apply();
+            if (activeDialog == dialog) activeDialog = null;
+        });
         close.setOnClickListener(v -> { feedback(); dialog.dismiss(); dashboard.invalidate(); });
         scaleTree(root, SET_SCALE);
         showBig(dialog, 0.95f, 0.93f);
@@ -1757,7 +1944,6 @@ public class MainActivity extends Activity {
                 final String m = ex instanceof FileNotFoundException ? "Repositório ou release não encontrado. O repositório precisa ser público e ter ao menos uma Release com um arquivo .apk."
                     : String.valueOf(ex.getMessage()).contains("403") ? "O GitHub limitou as consultas por agora. Tente de novo em alguns minutos."
                     : "Confira a internet da central.\n\n" + ex.getMessage();
-                getPreferences(0).edit().putLong("upd_last", System.currentTimeMillis() - 11L * 3600 * 1000).apply(); // falhou: tenta de novo só daqui a ~1 h
                 if (!silent) runOnUiThread(() -> popupInfo("Não foi possível verificar", m));
             } finally { updateChecking = false; }
         }).start();
@@ -1803,7 +1989,6 @@ public class MainActivity extends Activity {
                     offerUpdate(remoteName, "", 0, updateApkBase + apk);
                 });
             } catch (final Exception ex) {
-                getPreferences(0).edit().putLong("upd_last", System.currentTimeMillis() - 11L * 3600 * 1000).apply(); // tenta de novo só em ~1 h
                 if (!silent) runOnUiThread(() -> popupInfo("Não foi possível verificar", "Confira se o PC e a central estão na mesma rede e se o servidor está aberto.\n\n" + ex.getMessage()));
             } finally { updateChecking = false; }
         }).start();
@@ -1891,8 +2076,7 @@ public class MainActivity extends Activity {
         if (!weatherAuto || !netOnline || !gpsFresh() || Double.isNaN(gpsLat) || weatherLoading) return;
         long now = SystemClock.elapsedRealtime();
         boolean moved = Double.isNaN(weatherAutoLat) || haversine(gpsLat,gpsLon,weatherAutoLat,weatherAutoLon) > 15000;
-        boolean throttled = weatherAutoChecked != 0 && now - weatherAutoChecked < 60000; // 1ª consulta sai logo que houver GPS
-        if (!throttled && (moved || weatherStale())) {
+        if ((moved && now - weatherAutoChecked > 60000) || (weatherStale() && now - weatherAutoChecked > 60000)) {
             weatherAutoLat = gpsLat; weatherAutoLon = gpsLon; weatherAutoChecked = now;
             fetchWeather();
         }
@@ -1902,7 +2086,6 @@ public class MainActivity extends Activity {
         int code = -1, sunrise = -1, sunset = -1;
     }
     private void fetchWeather() {
-        if (weatherAuto && Double.isNaN(weatherAutoLat)) { tryAutoWeather(); return; } // ainda sem GPS: espera, não consulta à toa
         final String city = weatherAuto ? "Localização atual" : weatherCity;
         if (city.isEmpty()) { weatherLine = "Configure a cidade"; dashboard.invalidate(); return; }
         lastWeather = SystemClock.elapsedRealtime();
@@ -1964,7 +2147,7 @@ public class MainActivity extends Activity {
     private JSONObject readJson(String url) throws Exception {
         HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
         try {
-            conn.setConnectTimeout(7000); conn.setReadTimeout(7000); conn.setRequestProperty("User-Agent", "Peugeot308Launcher/" + BuildConfig.VERSION_NAME);
+            conn.setConnectTimeout(7000); conn.setReadTimeout(7000); conn.setRequestProperty("User-Agent", "Peugeot308Launcher/1.12");
             try (InputStream in = conn.getInputStream(); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
                 byte[] buffer = new byte[4096]; int n;
                 while ((n = in.read(buffer)) != -1) out.write(buffer, 0, n);
@@ -1973,7 +2156,6 @@ public class MainActivity extends Activity {
         } finally { conn.disconnect(); }
     }
     private String weatherDescription(int code) {
-        if (code < 0) return "--";
         if (code == 0) return "Céu limpo"; if (code <= 2) return "Poucas nuvens"; if (code == 3) return "Nublado"; if (code <= 48) return "Neblina";
         if (code <= 57) return "Garoa"; if (code <= 67) return "Chuva"; if (code <= 77) return "Neve";
         if (code <= 82) return "Pancadas de chuva"; if (code <= 86) return "Neve"; if (code >= 95) return "Trovoadas"; return "Tempo variável";
@@ -1987,7 +2169,7 @@ public class MainActivity extends Activity {
 
     private class Dashboard extends View {
         static final int I_NAV = 0, I_RADIO = 1, I_NOTE = 2, I_PHONE = 3, I_BT = 4, I_GRID = 5, I_GEAR = 6, I_WIFI = 7,
-                I_MINUS = 8, I_PLUS = 9, I_PREV = 10, I_NEXT = 11, I_PLAY = 12, I_PAUSE = 13, I_SPEAKER = 14, I_MUTE = 15, I_HOME = 16, I_WORK = 17, I_MENU = 18, I_TRIP = 19, I_BACK = 20, I_EQ = 21;
+                I_MINUS = 8, I_PLUS = 9, I_PREV = 10, I_NEXT = 11, I_PLAY = 12, I_PAUSE = 13, I_SPEAKER = 14, I_MUTE = 15, I_HOME = 16, I_WORK = 17, I_MENU = 18, I_TRIP = 19, I_BACK = 20, I_EQ = 21, I_YOUTUBE = 22, I_MAPS = 23, I_CHROME = 24;
         final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG), mp = new Paint(Paint.ANTI_ALIAS_FLAG);
         final RectF r = new RectF();
         final Path path = new Path();
@@ -1997,9 +2179,6 @@ public class MainActivity extends Activity {
         final Typeface tfBold = Typeface.create("sans-serif", Typeface.BOLD);
         final HashMap<String, android.graphics.drawable.Drawable> iconCache = new HashMap<>();
         final ArrayList<Hit> hits = new ArrayList<>();
-        final Locale br = new Locale("pt", "BR");
-        final SimpleDateFormat timeFmt = new SimpleDateFormat("HH:mm", Locale.getDefault());
-        final SimpleDateFormat dateFmt = new SimpleDateFormat("EEEE, d 'de' MMMM", br);
         float sx = 1, sy = 1, ox = 0, oy = 0;
         int pressedId = -1;
         boolean noHit = false; // desenha sem registrar toque (ex.: modo direção)
@@ -2007,7 +2186,7 @@ public class MainActivity extends Activity {
         Canvas canvas;
 
         Dashboard() { super(MainActivity.this); setHapticFeedbackEnabled(true); }
-        void clearIcons() { iconCache.clear(); labelCache.clear(); }
+        void clearIcons() { iconCache.clear(); }
         int faint() { return (cDim & 0x00FFFFFF) | 0x99000000; } // aviso quase invisível
 
         // ---------- primitivas
@@ -2066,6 +2245,19 @@ public class MainActivity extends Activity {
             canvas.save(); canvas.translate(cx, cy);
             float u = s / 2f, sw = Math.max(2f, s * 0.09f);
             switch (k) {
+                case I_YOUTUBE: {
+                    fill(col); r.set(-.95f*u,-.65f*u,.95f*u,.65f*u);canvas.drawRoundRect(r,.27f*u,.27f*u,p);
+                    fill(cSurf2);path.reset();path.moveTo(-.2f*u,-.4f*u);path.lineTo(.55f*u,0);path.lineTo(-.2f*u,.4f*u);path.close();canvas.drawPath(path,p);break;
+                }
+                case I_MAPS: {
+                    stroke(col,sw);r.set(-.65f*u,-.9f*u,.65f*u,.4f*u);canvas.drawOval(r,p);
+                    fill(col);path.reset();path.moveTo(-.45f*u,.15f*u);path.lineTo(0,.92f*u);path.lineTo(.45f*u,.15f*u);path.close();canvas.drawPath(path,p);
+                    fill(cSurf2);canvas.drawCircle(0,-.3f*u,.2f*u,p);break;
+                }
+                case I_CHROME: {
+                    stroke(col,sw*1.3f);canvas.drawCircle(0,0,.8f*u,p);canvas.drawCircle(0,0,.3f*u,p);
+                    for(int i=0;i<3;i++){double a=i*2*Math.PI/3;canvas.drawLine((float)Math.cos(a)*.34f*u,(float)Math.sin(a)*.34f*u,(float)Math.cos(a+1.1f)*.75f*u,(float)Math.sin(a+1.1f)*.75f*u,p);}break;
+                }
                 case I_NAV: {
                     fill(col); path.reset(); path.moveTo(0, -u); path.lineTo(.8f * u, .92f * u); path.lineTo(0, .46f * u); path.lineTo(-.8f * u, .92f * u); path.close(); canvas.drawPath(path, p); break;
                 }
@@ -2224,13 +2416,34 @@ public class MainActivity extends Activity {
             c.save(); c.translate(ox, oy); c.scale(s, s);
             p.reset(); p.setShader(new LinearGradient(0, 0, 0, 720, cBg0, cBg1, Shader.TileMode.CLAMP)); c.drawRect(0, 0, 1280, 720, p); p.setShader(null);
             if (albumBg && Color.alpha(artCur) > 0) drawArtGlow();
-            drawHeader(); drawClockWeather();
-            if (vehicleMenuEnabled) { drawMedia(386, 508, false); drawVehicle(); }
-            else {
-                drawMedia(386, 862, true);
-
+            drawHeader();
+            boolean idle = immersiveIdle &&
+                SystemClock.uptimeMillis()-lastHomeInteraction>10000 && !volumeVisible && !drivingMode;
+            if (idle) {
+                // v1.24: clima conserva a largura original (330px) e apenas
+                // estende verticalmente. Spotify ganha toda a largura restante.
+                // Se houver veículo, ele conserva uma coluna própria à direita.
+                // As três áreas partilham o mesmo topo e a mesma altura.
+                final float left = 32f, right = 1248f, gap = 20f;
+                final float weatherW = 330f, panelH = 592f;
+                drawWeatherIdle(left, weatherW, panelH);
+                float mediaLeft = left + weatherW + gap;
+                if (vehicleMenuEnabled) {
+                    final float vehicleW = 330f;
+                    float vehicleLeft = right - vehicleW;
+                    float mediaW = vehicleLeft - gap - mediaLeft;
+                    drawMediaIdle(mediaLeft, mediaW, panelH);
+                    drawVehicleIdle(vehicleLeft, vehicleW, panelH);
+                } else {
+                    drawMediaIdle(mediaLeft, right - mediaLeft, panelH);
+                }
+            } else {
+                drawClockWeather();
+                if (vehicleMenuEnabled) { drawMedia(386, 508, false); drawVehicle(); }
+                else drawMedia(386, 862, true, false);
+                drawDock();
             }
-            drawDock(); drawAlertPopup(); drawVolume();
+            drawAlertPopup(); drawVolume();
             c.restore();
         }
 
@@ -2245,20 +2458,61 @@ public class MainActivity extends Activity {
             ArrayList<Integer> ids = new ArrayList<>();
             for (int sl : topSlot) if (sl >= 0 && sl < vehicleNames.length) ids.add(sl);
             if (ids.isEmpty()) return;
-            float gap = 8, w = Math.min(122, (596 - startX - gap * (ids.size() - 1)) / ids.size());
+            // Mini-cards são distribuídos proporcionalmente dentro da faixa reservada.
+            // 1 card: centralizado e um pouco mais largo; 2/3: larguras iguais.
+            float gap = 8, available = Math.max(0, 596 - startX);
+            float w = Math.min(ids.size() == 1 ? 180 : ids.size() == 2 ? 158 : 122,
+                    (available - gap * (ids.size() - 1)) / ids.size());
             if (w < 70) return;
+            float firstX = startX + Math.max(0, (available - (w * ids.size() + gap * (ids.size() - 1))) / 2f);
             float spd = speedNow();
+            // Pisca somente com velocidade válida e acima de 115% do limite configurado.
+            boolean critical = speedVisualOn() && spd >= 0 && spd > speedLimit * 1.15f;
+            boolean flashOn = (SystemClock.uptimeMillis() / 450L) % 2L == 0L;
             for (int i = 0; i < ids.size(); i++) {
-                int id = ids.get(i); float x = startX + i * (w + gap), y = 10, h = 52;
+                int id = ids.get(i); float x = firstX + i * (w + gap), y = 10, h = 52;
+                // O toque é associado à posição REAL do card, inclusive quando outros estão desligados.
+                if (id == 0) hit(45, x, y, w, h);
                 String val = vehicleValue(id); boolean live = val != null;
-                boolean alert = speedAlert && spd > speedLimit && (id == 0 || id == 10);
-                rr(x, y, w, h, 12, alert ? mix(cSurf2, cBad, .35f) : cSurf2);
-                text(vehicleShort[id], x + 10, y + 17, 10, alert ? cBad : cDim, tfBold, Paint.Align.LEFT, .06f);
-                String u = vehicleUnits[id], shown = live ? val : "--"; float uw = u.isEmpty() ? 0 : measure(u, 12, tfReg, 0) + 3, vs = 22;
+                // Apenas o indicador de velocidade atual reage; o indicador 'Limite' não pisca.
+                boolean over = speedVisualOn() && id == 0 && live && spd > speedLimit;
+                boolean flashing = over && critical && flashOn;
+                int cardBg = flashing ? cBad : (over ? mix(cSurf2, cBad, .34f) : cSurf2);
+                int titleColor = flashing ? Color.WHITE : (over ? cBad : cDim);
+                int valueColor = flashing ? Color.WHITE : (over ? cBad : (live ? cText : cDim));
+                rr(x, y, w, h, 12, cardBg);
+                // Título e valor centralizados, inclusive quando há somente um mini-card.
+                text(fit(vehicleShort[id], 10, tfBold, w - 12), x + w/2f, y + 17, 10, titleColor, tfBold, Paint.Align.CENTER, .06f);
+                String u = vehicleUnits[id], shown = live ? val : "--";
+                float uw = u.isEmpty() ? 0 : measure(u, 12, tfReg, 0) + 4, vs = 22;
                 while (vs > 14 && measure(shown, vs, tfBold, 0) + uw > w - 18) vs -= 2;
-                t(shown, x + 10, y + 43, vs, alert ? cBad : (live ? cText : cDim), tfBold);
-                if (!u.isEmpty()) t(u, x + 10 + measure(shown, vs, tfBold, 0) + 3, y + 43, 12, cDim, tfReg);
+                float tw = measure(shown, vs, tfBold, 0) + uw;
+                float valueX = x + (w - tw)/2f;
+                t(shown, valueX, y + 43, vs, valueColor, tfBold);
+                if (!u.isEmpty()) t(u, valueX + measure(shown, vs, tfBold, 0) + 4, y + 43, 12, flashing ? Color.WHITE : cDim, tfReg);
             }
+        }
+
+        // Botão compacto para o topo: ícone e legenda se adaptam ao espaço livre.
+        void topPill(int id,float x,float w,int kind,String label,boolean active) {
+            boolean pr=hit(id,x,14,w,44);
+            rr(x,14,w,44,12,pr?mix(cSurf2,accent,.24f):cSurf2);
+            // Centraliza o conjunto ícone + texto no botão, sem deslocá-lo à esquerda.
+            float fs = w < 90 ? 12 : 13;
+            float iconSize = w < 72 ? 16 : 19;
+            float gapLabel = 6;
+            String visibleLabel = fit(label, fs, tfMed, Math.max(8, w - iconSize - gapLabel - 12));
+            float labelWidth = measure(visibleLabel, fs, tfMed, 0);
+            float groupWidth = iconSize + gapLabel + labelWidth;
+            float groupX = x + (w - groupWidth)/2f;
+            ic(kind, groupX + iconSize/2f, 36, iconSize, active ? accent : cDim);
+            t(visibleLabel, groupX + iconSize + gapLabel, 41, fs, cText, tfMed);
+        }
+
+        void topVolumeKey(int id, float x, float w, int kind, String description, boolean active) {
+            boolean pressed = hit(id, x, 14, w, 44);
+            rr(x, 14, w, 44, 12, pressed ? mix(cSurf2, accent, .30f) : cSurf2);
+            ic(kind, x + w/2f, 36, 22, active ? cBad : accent);
         }
 
         void drawHeader() {
@@ -2272,36 +2526,165 @@ public class MainActivity extends Activity {
             float dvx = gx + w308 + 14;
             ln(dvx, 22, dvx, 50, cHair, 1.5f);
             drawTopWidget(dvx + 14);
-            iconBtn(1, 612, 12, 56, 48, I_MINUS, 22);
-            iconBtn(2, 676, 12, 64, 48, I_MUTE, 24);
-            iconBtn(3, 748, 12, 56, 48, I_PLUS, 22);
-            ln(824, 22, 824, 50, cHair, 1.5f);
-            noHit = drivingMode; // em movimento os chips viram só indicadores
-            chip(4, 840, 14, 84, 44, I_BT, "BT", btConnected);
-            chip(5, 930, 14, 102, 44, I_WIFI, "Wi-Fi", wifiConnected);
-            noHit = false;
-            if(!vehicleMenuEnabled && standaloneVehicleButton) {
-                boolean pv=hit(43,1038,14,76,44);
-                rr(1038,14,76,44,12,pv?mix(cSurf2,accent,.3f):cSurf2);
-                text("PC",1076,41,17,cText,tfBold,Paint.Align.CENTER,.04f);
-            } else chip(7, 1038, 14, 76, 44, I_EQ, "EQ", snd != null && snd.on);
-            if (drivingMode) {
-                rr(1122, 12, 126, 48, 14, mix(cSurf2, accent, .25f));
-                text("MODO DIREÇÃO", 1185, 41, 13, cText, tfBold, Paint.Align.CENTER, .04f);
-            } else {
-                boolean pr = hit(6, 1122, 12, 126, 48); pushPress(pr, 1122, 12, 126, 48);
-                rr(1122, 14, 126, 44, 13, pr ? mix(cSurf2, accent, .3f) : cSurf2); ic(I_GEAR, 1150, 36, 22, cText); t("Config.", 1174, 42, 17, cText, tfMed); popPress();
+            // Grupos proporcionais e espaços reais entre botões; não sobrepor rótulos.
+            if (topVolumeVisible) {
+                ln(606, 22, 606, 50, cHair, 1.5f);
+                // Controles diretos: menos, mais e mudo. Somente o HUD central mostra números.
+                topVolumeKey(1, 625, 50, I_MINUS, "Diminuir volume", false);
+                topVolumeKey(2, 679, 50, I_PLUS, "Aumentar volume", false);
+                topVolumeKey(3, 733, 50, I_MUTE, "Alternar mudo", isMuted());
+                ln(805, 22, 805, 50, cHair, 1.5f);
             }
+            // Use o espaço liberado quando volume ou outros atalhos são ocultados.
+            float left = topVolumeVisible ? 822 : 615;
+            float right = 1256, spacing = 8;
+            boolean showPc = !vehicleMenuEnabled && standaloneVehicleButton && topPcVisible;
+            boolean showEq = !showPc && topEqVisible;
+            int count = 1 + (topBtVisible?1:0) + (topWifiVisible?1:0) +
+                    (topRadarVisible?1:0) + (showPc?1:0) + (showEq?1:0);
+            // A largura acompanha o número de atalhos ativos, com limite para
+            // não criar botões desproporcionalmente grandes.
+            float itemW = Math.min(136, (right - left - spacing*(count-1))/count);
+            float at = right - (itemW*count + spacing*(count-1));
+            noHit = drivingMode;
+            if (topBtVisible) { topPill(4,at,itemW,I_BT,"BT",btConnected); at+=itemW+spacing; }
+            if (topWifiVisible) { topPill(5,at,itemW,I_WIFI,"Wi-Fi",wifiConnected); at+=itemW+spacing; }
+            noHit = false;
+            if (topRadarVisible) { topPill(44,at,itemW,I_NAV,"Radar",radarEnabled); at+=itemW+spacing; }
+            if (showPc) { topPill(43,at,itemW,I_TRIP,"PC",true); at+=itemW+spacing; }
+            else if (showEq) { topPill(7,at,itemW,I_EQ,"EQ",snd!=null && snd.on); at+=itemW+spacing; }
+            if (drivingMode) {
+                rr(at,14,itemW,44,12,mix(cSurf2,accent,.22f));
+                text("DIR.",at+itemW/2,41,13,cText,tfBold,Paint.Align.CENTER,.02f);
+            } else {
+                topPill(6,at,itemW,I_GEAR,"Config",true);
+            }
+        }
+
+        // v1.23: cards do modo recolhido usam a MESMA grade, sem deformar conteúdo.
+        void drawWeatherIdle(float x, float w, float h) {
+            float y = 96, cx = x + w/2;
+            card(x,y,w,h);
+            String time = new SimpleDateFormat("HH:mm", Locale.getDefault()).format(new Date());
+            Locale br = new Locale("pt","BR");
+            String date = new SimpleDateFormat("EEEE, d 'de' MMMM", br).format(new Date());
+            if (!date.isEmpty()) date = date.substring(0,1).toUpperCase(br) + date.substring(1);
+            tc(time,cx,y+112,Math.min(90,w*.19f),cText,tfLight);
+            tc(fit(date,19,tfReg,w-35),cx,y+156,19,cMuted,tfReg);
+            ln(x+24,y+177,x+w-24,y+177,cHair,1.5f);
+            boolean hasWx = (weatherAuto || !weatherCity.isEmpty()) && weatherLine.endsWith("°C");
+            if (!hasWx) {
+                weatherIcon(3,cx,y+292,82);
+                tc(fit(weatherLoading?"Buscando previsão…":weatherCity.isEmpty() && !weatherAuto?"Escolha sua cidade":"Previsão indisponível",21,tfMed,w-30),cx,y+383,21,cText,tfMed);
+                tc("Toque para configurar",cx,y+419,16,cMuted,tfReg);
+            } else {
+                tc(fit(weatherDetail.isEmpty()?weatherCity:weatherDetail,21,tfMed,w-40),cx,y+219,21,cText,tfMed);
+                tc(fit(weatherCondition,17,tfReg,w-40),cx,y+255,17,cMuted,tfReg);
+                weatherIcon(weatherCode,cx-63,y+330,72);
+                t(weatherLine,cx-20,y+347,Math.min(50,w*.115f),cText,tfBold);
+                float dx = w>500?124:100;
+                text("MÁX / MÍN",cx-dx,y+423,13,cDim,tfBold,Paint.Align.LEFT,0);
+                text("CHUVA",cx+12,y+423,13,cDim,tfBold,Paint.Align.LEFT,0);
+                t(fit(weatherHigh+" / "+weatherLow,19,tfMed,dx+4),cx-dx,y+449,19,cText,tfMed);
+                t(fit(weatherRain,19,tfMed,dx-18),cx+12,y+449,19,cText,tfMed);
+                text("VENTO",cx-dx,y+499,13,cDim,tfBold,Paint.Align.LEFT,0);
+                text("UMIDADE",cx+12,y+499,13,cDim,tfBold,Paint.Align.LEFT,0);
+                t(fit(weatherWind,19,tfMed,dx+4),cx-dx,y+525,19,cText,tfMed);
+                t(fit(weatherHumidity,19,tfMed,dx-18),cx+12,y+525,19,cText,tfMed);
+            }
+            hit(30,x,y+180,w,h-180);
+        }
+
+        void drawMediaIdle(float x,float w,float h) {
+            float y=96, cx=x+w/2;
+            card(x,y,w,h);
+            int sourceColor=mediaIsSpotify?0xff1ED760:accent;
+            circle(x+37,y+39,19,sourceColor);
+            ic(I_NOTE,x+37,y+39,21,mediaIsSpotify?0xff06210F:onAccent);
+            t(fit(mediaSource,21,tfMed,w-194),x+67,y+46,21,cText,tfMed);
+            rr(x+w-133,y+24,112,30,15,cSurf2);
+            tc(mediaPlaying?"TOCANDO":"PAUSADO",x+w-77,y+44,12,cMuted,tfBold);
+            boolean compact=w<450;
+            float art=compact?Math.min(166,w*.42f):Math.min(240,w*.39f);
+            float ax=x+24,ay=y+98;
+            rr(ax,ay,art,art,20,cSurf2);
+            if(albumArt!=null) {
+                p.reset();p.setAntiAlias(true);p.setFilterBitmap(true);
+                canvas.save();path.reset();r.set(ax,ay,ax+art,ay+art);
+                path.addRoundRect(r,20,20,Path.Direction.CW);canvas.clipPath(path);
+                int bw=albumArt.getWidth(),bh=albumArt.getHeight(),side=Math.min(bw,bh);
+                canvas.drawBitmap(albumArt,new Rect((bw-side)/2,(bh-side)/2,(bw-side)/2+side,(bh-side)/2+side),r,p);
+                canvas.restore();rrs(ax,ay,art,art,20,cHair,1.2f);
+            } else ic(I_NOTE,ax+art/2,ay+art/2,art*.39f,accent);
+            // O botão ocupa exatamente a largura da capa e permanece abaixo dela.
+            float ly=ay+art+12,lh=32;
+            boolean pressed=hit(26,ax,ly,art,lh);
+            rr(ax,ly,art,lh,11,pressed?mix(cSurf2,accent,.25f):cSurf2);
+            tc("♫  Letras",ax+art/2,ly+21,14,accent,tfMed);
+            float tx=ax+art+19,tw=Math.max(80,x+w-23-tx);
+            text(mediaPlaying?"TOCANDO AGORA":"EM PAUSA",tx,y+114,11,accent,tfBold,Paint.Align.LEFT,.06f);
+            t(fit(songTitle,compact?21:27,tfBold,tw),tx,y+151,compact?21:27,cText,tfBold);
+            t(fit(songArtist,compact?16:19,tfReg,tw),tx,y+182,compact?16:19,cMuted,tfReg);
+            long pos=livePosition();
+            float barX=x+25,barY=y+392,barW=w-50,frac=songDuration>0?Math.min(1f,(float)pos/songDuration):0f;
+            rr(barX,barY,barW,8,4,cTrack);
+            if(frac>0)rr(barX,barY,Math.max(8,barW*frac),8,4,accent);
+            seekX=barX;seekW=barW;
+            hit(25,barX,barY-13,barW,34);
+            t(songDuration>0?timeString(pos):"--:--",barX,barY+37,15,cDim,tfReg);
+            tr(songDuration>0?timeString(songDuration):"--:--",barX+barW,barY+37,15,cDim,tfReg);
+            float buttonY=y+502,sep=compact?91:117;
+            roundBtn(20,cx-sep,buttonY,compact?35:40,I_PREV,compact?26:30,cSurf2,cText);
+            roundBtn(21,cx,buttonY,compact?46:52,mediaPlaying?I_PAUSE:I_PLAY,compact?36:40,accent,onAccent);
+            roundBtn(22,cx+sep,buttonY,compact?35:40,I_NEXT,compact?26:30,cSurf2,cText);
+            hit(23,x,y,w,h);
+        }
+
+        void drawVehicleIdle(float x,float w,float h) {
+            float y=96,cx=x+w/2;
+            card(x,y,w,h);
+            text("VEÍCULO",x+24,y+38,17,cMuted,tfMed,Paint.Align.LEFT,.1f);
+            circle(x+w-135,y+33,4.5f,gpsFresh()?cOk:cDim);
+            t("GPS",x+w-124,y+38,13,cMuted,tfMed);
+            circle(x+w-70,y+33,4.5f,hasCanData()?cOk:cDim);
+            t(vehicleDataSource==1?"OBD":"CAN",x+w-60,y+38,13,cMuted,tfMed);
+            float gap=8,bw=(w-48-2*gap)/3f,by=y+60;
+            int[] kinds={I_MENU,I_TRIP,I_BACK};
+            for(int i=0;i<3;i++) {
+                float bx=x+24+i*(bw+gap);
+                boolean pr=hit(40+i,bx,by,bw,64);
+                rr(bx,by,bw,64,14,pr?mix(cSurf2,accent,.45f):cSurf2);
+                ic(kinds[i],bx+bw/2,by+23,22,accent);
+                tc(fit(vbtnLabel[i].toUpperCase(Locale.getDefault()),12,tfBold,bw-8),bx+bw/2,by+51,12,cText,tfBold);
+            }
+            String speed=vehicleValue(0);
+            tc("VELOCIDADE",cx,y+179,15,cMuted,tfBold);
+            tc(speed==null?"--":speed,cx,y+261,65,cText,tfLight);
+            tc("km/h",cx,y+293,17,cDim,tfReg);
+            ln(x+25,y+323,x+w-25,y+323,cHair,1.4f);
+            ArrayList<Integer> others=new ArrayList<>();
+            for(int id=1;id<vehicleNames.length;id++)if(vehicleVisible[id])others.add(id);
+            int n=Math.min(4,others.size());
+            float colW=(w-58)/2f;
+            for(int i=0;i<n;i++) {
+                int id=others.get(i);
+                float bx=x+24+(i%2)*(colW+10),cy=y+361+(i/2)*94;
+                rr(bx,cy-19,colW,83,12,cSurf2);
+                t(fit(vehicleShort[id],13,tfBold,colW-20),bx+10,cy+4,13,cDim,tfBold);
+                String value=vehicleValue(id);
+                t(fit((value==null?"--":value)+" "+vehicleUnits[id],21,tfMed,colW-20),bx+10,cy+39,21,value==null?cDim:cText,tfMed);
+            }
+            if(n==0)tc("Indicadores não configurados",cx,y+412,16,cMuted,tfReg);
+            hit(43,x+18,y+4,120,46);
         }
 
         void drawClockWeather() {
             float x = 32, y = 96, w = 330, h = 456, cx = x + w / 2;
             card(x, y, w, h);
-            Date now = new Date(); TimeZone tz = TimeZone.getDefault();
-            timeFmt.setTimeZone(tz); dateFmt.setTimeZone(tz); // acompanha ajuste de fuso/horário da central
-            String time = timeFmt.format(now);
+            String time = new SimpleDateFormat("HH:mm", Locale.getDefault()).format(new Date());
             tc(time, cx, 202, 92, cText, tfLight);
-            String date = dateFmt.format(now);
+            Locale br = new Locale("pt", "BR");
+            String date = new SimpleDateFormat("EEEE, d 'de' MMMM", br).format(new Date());
             date = date.substring(0, 1).toUpperCase(br) + date.substring(1);
             tc(date, cx, 240, 20, cMuted, tfReg);
             ln(x + 24, 264, x + w - 24, 264, cHair, 1.5f);
@@ -2329,8 +2712,9 @@ public class MainActivity extends Activity {
             hit(30, x, 268, w, y + h - 268);
         }
 
-        void drawMedia(float x, float w, boolean wide) {
-            float y = 96, h = 456;
+        void drawMedia(float x, float w, boolean wide) { drawMedia(x,w,wide,false); }
+        void drawMedia(float x, float w, boolean wide, boolean expanded) {
+            float y = 96, h = expanded ? 592 : 456;
             card(x, y, w, h);
             int srcCol = mediaIsSpotify ? 0xff1ED760 : accent;
             circle(x + 40, y + 42, 22, srcCol); ic(I_NOTE, x + 40, y + 42, 24, mediaIsSpotify ? 0xff06210F : onAccent);
@@ -2371,10 +2755,12 @@ public class MainActivity extends Activity {
             roundBtn(20, cxc - 124, cyc, 46, I_PREV, 34, cSurf2, cText);
             roundBtn(21, cxc, cyc, 58, mediaPlaying ? I_PAUSE : I_PLAY, 46, accent, onAccent);
             roundBtn(22, cxc + 124, cyc, 46, I_NEXT, 34, cSurf2, cText);
-            // Letras manuais na área de mídia: visível mesmo sem sessão Spotify ativa.
-            boolean lyricsPress=hit(26,x+w-134,y+68,110,34);
-            rr(x+w-134,y+68,110,34,11,lyricsPress?mix(cSurf2,accent,.25f):cSurf2);
-            tc("♫ LETRAS",x+w-79,y+91,13,cText,tfMed);
+            // Letras discretas centralizadas logo abaixo da capa, longe do título e dos controles.
+            float lw=art, lh=31;
+            float lx=ax+(art-lw)/2f, ly=ay+art+12;
+            boolean lyricsPress=hit(26,lx,ly,lw,lh);
+            rr(lx,ly,lw,lh,11,lyricsPress?mix(cSurf2,accent,.25f):cSurf2);
+            text("♫  Letras",lx+lw/2,ly+19,13,accent,tfMed,Paint.Align.CENTER,.02f);
             hit(23, x, y, w, h);
         }
 
@@ -2464,7 +2850,17 @@ public class MainActivity extends Activity {
                 else if (isBuiltin) {
                     int[] kinds = {I_NAV, I_RADIO, I_NOTE, I_PHONE, I_BT, I_GRID, I_GEAR, I_HOME, I_WORK, I_GRID};
                     ic(kinds[id], cx, cy, ico * .9f, (id == 0 || id == 7 || id == 8) ? accent : cText);
-                } else ic(I_GRID, cx, cy, ico * .9f, accent);
+                } else {
+                    int picture=I_GRID;
+                    if(realPkg!=null) {
+                        if(realPkg.contains("youtube")) picture=I_YOUTUBE;
+                        else if(realPkg.contains("maps")||realPkg.contains("waze")) picture=I_MAPS;
+                        else if(realPkg.contains("chrome")||realPkg.contains("browser")) picture=I_CHROME;
+                        else if(realPkg.contains("spotify")) picture=I_NOTE;
+                        else if(realPkg.contains("phone")||realPkg.contains("dialer")) picture=I_PHONE;
+                    }
+                    ic(picture,cx,cy,ico*.9f,accent);
+                }
                 float ls = Math.max(13, Math.min(18, w / 8.2f));
                 tc(fit(label, ls, tfMed, w - 14), cx, y + 94, ls, cText, tfMed);
                 if (isBuiltin && id == 9 && pkg != null) circle(x+w-16,y+17,4.5f,cOk);
@@ -2494,25 +2890,40 @@ public class MainActivity extends Activity {
         }
         int faintC() { return (cDim & 0x00FFFFFF) | 0xAA000000; }
         void drawVolume() {
-            if (!volumeVisible) return;
-            if (!isMuted() && SystemClock.uptimeMillis() > volumeUntil) { volumeVisible = false; return; }
-            boolean mutedNow = isMuted();
-            rr(0, 0, 1280, 720, 0, mutedNow ? 0xf0000309 : 0xb8000309);
-            card(345, 191, 590, 335);
-            int v = audio.getStreamVolume(AudioManager.STREAM_MUSIC), max = Math.max(1, audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC));
-            text(mutedNow ? "SOM DESATIVADO" : "VOLUME", 640, 246, 26, mutedNow ? cBad : cText, tfMed, Paint.Align.CENTER, .08f);
-            if (mutedNow) {
-                circle(640, 338, 64, mix(cSurf2, cBad, .25f)); ic(I_MUTE, 640, 338, 88, cBad);
-                rr(410, 424, 460, 66, 33, accent);
-                tc("TOQUE AQUI PARA TIRAR DO MUDO", 640, 466, 21, onAccent, tfBold);
-            } else {
-                tc(v + " / " + max, 640, 337, 53, accent, tfBold);
-                rr(390, 381, 78, 70, 16, cSurf2); rr(812, 381, 78, 70, 16, cSurf2);
-                ic(I_MINUS, 429, 416, 30, cText); ic(I_PLUS, 851, 416, 30, cText);
-                rr(485, 407, 310, 16, 8, cTrack); rr(485, 407, Math.max(16, 310f * v / max), 16, 8, accent);
-                rr(552, 462, 176, 48, 14, cSurf2);ic(I_MUTE,574,486,22,cText);
-                tc("SILENCIAR",655,493,17,cText,tfMed);
+            if (!volumeVisible && !userMuted) return;
+            long now = SystemClock.uptimeMillis();
+            if (!userMuted && now >= volumeUntil) {
+                volumeVisible = false;
+                return;
             }
+            // MUDO persistente e fixo no centro, sem barra nem número.
+            // Tocar no próprio painel desativa o mudo, assim como o botão do topo.
+            if (userMuted) {
+                float w = 254, h = 112;
+                float x = (1280 - w) / 2f;
+                float y = (720 - h) / 2f;
+                boolean pressed = hit(46, x, y, w, h);
+                pushPress(pressed, x, y, w, h);
+                rr(x, y, w, h, 22, pressed ? cSurf2 : cSurfTop);
+                rrs(x, y, w, h, 22, cHair, 1.3f);
+                ic(I_MUTE, x + w / 2, y + 40, 40, 0xffEF4444);
+                tc("MUDO", x + w / 2, y + 91, 29, cText, tfBold);
+                popPress();
+                return;
+            }
+            // Volume normal: HUD central por 2 segundos sem capturar toques.
+            int v = audio.getStreamVolume(AudioManager.STREAM_MUSIC);
+            int max = Math.max(1, audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC));
+            float x = 475, y = 265, w = 330, h = 155;
+            rr(x, y, w, h, 23, cSurfTop);
+            rrs(x, y, w, h, 23, cHair, 1.3f);
+            ic(I_NOTE, x + 43, y + 44, 26, accent);
+            text("VOLUME", x + 71, y + 51, 20, cText, tfBold, Paint.Align.LEFT, .06f);
+            tr(String.valueOf(v), x + w - 25, y + 55, 30, accent, tfBold);
+            rr(x + 26, y + 100, w - 52, 13, 7, cTrack);
+            if (v > 0) rr(x + 26, y + 100, (w - 52) * v / max, 13, 7, accent);
+            tc("Volume de mídia Android", x + w / 2, y + 136, 13, cMuted, tfReg);
+            postInvalidateDelayed(Math.max(32, Math.min(250, volumeUntil - now)));
         }
 
         // ---------- toque
@@ -2525,10 +2936,17 @@ public class MainActivity extends Activity {
                 return;
             }
             switch (id) {
-                case 1: case 3: showVolume(); break;
-                case 2: toggleMute(); break;
+                case 1: adjustVolume(-1); break;
+                case 2: adjustVolume(1); break;
+                case 3: toggleMute(); break;
                 case 4: openSystemSetting(Settings.ACTION_BLUETOOTH_SETTINGS); break;
                 case 5: openSystemSetting(Settings.ACTION_WIFI_SETTINGS); break;
+                case 45: openSpeedCardMenu(); break;
+                case 46: if (userMuted) toggleMute(); break;
+                case 44: radarEnabled=!radarEnabled;getPreferences(0).edit().putBoolean("radar_alert",radarEnabled).apply();
+                         if(!radarEnabled){radars.clear();radarFetchAt=0;radarCount=0;radarError="Desligado";}
+                         else { radarFetchAt=0; radarError="Aguardando GPS e internet"; }
+                         refreshGpsNeed();snack(radarEnabled?(checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)==PackageManager.PERMISSION_GRANTED?"Avisos de radar ligados • requer internet e GPS":"Ative a localização para os avisos de radar"):"Avisos de radar desligados");invalidate();break;
                 case 6: if (!drivingMode) settings(); break;
                 case 7: openEq(); break;
                 case 40: vehicleOptionsMenu(); break;
@@ -2554,7 +2972,10 @@ public class MainActivity extends Activity {
         Runnable lpTask = null; boolean lpFired = false;
         void cancelLp() { if (lpTask != null) { handler.removeCallbacks(lpTask); lpTask = null; } }
         Hit hitAt(float x, float y) {
+            // Painel MUDO fica por cima dos cards: seu toque precisa ter prioridade.
+            for (Hit h : hits) if(h.id == 46 && x >= h.x && x <= h.x+h.w && y >= h.y && y <= h.y+h.h) return h;
             // Alvo específico de letras tem prioridade sobre o toque genérico do painel Spotify.
+            for (Hit h : hits) if(h.id == 45 && x >= h.x && x <= h.x+h.w && y >= h.y && y <= h.y+h.h) return h;
             for (Hit h : hits) if(h.id == 26 && x >= h.x && x <= h.x+h.w && y >= h.y && y <= h.y+h.h) return h;
             for (Hit h : hits) if (x >= h.x && x <= h.x + h.w && y >= h.y && y <= h.y + h.h) return h;
             return null;
@@ -2562,30 +2983,13 @@ public class MainActivity extends Activity {
         @Override public boolean onTouchEvent(MotionEvent event) {
             float x = (event.getX() - ox) / sx, y = (event.getY() - oy) / sy;
             int act = event.getActionMasked();
+            if(act==MotionEvent.ACTION_DOWN) {
+                boolean wasIdle=immersiveIdle && SystemClock.uptimeMillis()-lastHomeInteraction>10000;
+                lastHomeInteraction=SystemClock.uptimeMillis();
+                if(wasIdle && y>555) { pressedId=-1;invalidate();return true; }
+            }
             if (SystemClock.uptimeMillis() <= alertUntil) { // qualquer toque fecha o aviso
                 pressedId = -1; if (act == MotionEvent.ACTION_UP) { alertUntil = 0; invalidate(); } return true;
-            }
-            if (volumeVisible && (isMuted() || SystemClock.uptimeMillis() <= volumeUntil)) {
-                pressedId = -1;
-                if (act != MotionEvent.ACTION_UP) return true;
-                if (isMuted()) {
-                    if (x >= 410 && x <= 870 && y >= 424 && y <= 490) { feedback(); toggleMute(); }
-                    return true; // bloqueia a tela enquanto mudo
-                }
-                if (y >= 381 && y <= 451 && x >= 390 && x <= 468) { feedback(); adjustVolume(-1); }
-                else if (y >= 381 && y <= 451 && x >= 812 && x <= 890) { feedback(); adjustVolume(1); }
-                else if (y >= 385 && y <= 448 && x >= 485 && x <= 795) {
-                    int max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC);
-                    int value = Math.max(0, Math.min(max, Math.round((x - 485) / 310f * max)));
-                    cancelRamp();
-                    if (value == 0) { int cur = audio.getStreamVolume(AudioManager.STREAM_MUSIC); if (cur > 0) previousVolume = cur; }
-                    audio.setStreamVolume(AudioManager.STREAM_MUSIC, value, 0);
-                    if (snd != null) snd.volumeChanged();
-                    if (value > 0) { previousVolume = value; volumeVisible = false; invalidate(); } else showVolume();
-                    feedback();
-                } else if (y >= 462 && y <= 510 && x >= 552 && x <= 728) { feedback(); toggleMute(); }
-                else { volumeVisible = false; invalidate(); }
-                return true;
             }
             switch (act) {
                 case MotionEvent.ACTION_DOWN: {
@@ -2865,7 +3269,7 @@ public class MainActivity extends Activity {
             hslider(R_FAD, 668, 406, 552, (snd.fader + 10f) / 20f, true);
             t("Reforço de graves", 644, 482, 20, cText, tfMed); tr("+" + Math.round(snd.bass * 10), 1220, 482, 20, accent, tfBold);
             hslider(R_SUB, 668, 516, 552, snd.bass, false);
-            wrap("* Balanço e fader dependem do DSP da Jancar. Nesta versão os valores são apenas guardados e transmitidos por broadcast; NÃO controlam o hardware sem integração OEM. Graves usam equalização Android; avalie com volume moderado.", 644, 574, 14, cDim, tfReg, 584, 19);
+            wrap("* Balanço e fader: não controlam a MCU da Jancar sem API OEM. Use Som original Jancar nas configurações. Reforço de graves suavizado e ainda sujeito ao DSP físico; teste em volume baixo.", 644, 574, 14, cDim, tfReg, 584, 19);
         }
 
         // ---------- toque

@@ -7,6 +7,7 @@ import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.media.AudioManager;
 import android.media.audiofx.AudioEffect;
+import android.media.audiofx.BassBoost;
 import android.media.audiofx.Equalizer;
 import android.os.Handler;
 import android.os.Looper;
@@ -52,7 +53,7 @@ final class SoundEngine {
     float loudBelow = 0.55f;  // volume (fração) abaixo do qual o loudness age
     boolean autoVolOn = false;
     int autoVolMax = 3;       // máximo de níveis somados ao volume do usuário
-    float bass = 0f;          // 0..1 (reforço de graves aplicado nas bandas baixas do EQ)
+    float bass = 0f;          // 0..1 (BassBoost)
     float balance = 0f, fader = 0f;   // -10..10
     float padX = -0.45f, padY = -0.35f; // ponto de escuta (-1..1)
     String fieldName = "Motorista";
@@ -69,7 +70,7 @@ final class SoundEngine {
     String status = "Iniciando…";
     boolean effectOk = false;
     int nBands = 0; float minDb = -15f, maxDb = 15f;
-    private Equalizer eq;
+    private Equalizer eq; private BassBoost bb;
     private float[][] edges; private long retryAt = 0;
     private final HashMap<Integer, Equalizer> sessEq = new HashMap<>();
     private boolean started = false;
@@ -188,7 +189,8 @@ final class SoundEngine {
     // ------------------------------------------------------------ efeitos
     private void releaseEffects() {
         try { if (eq != null) eq.release(); } catch (Exception ignored) {}
-        eq = null; effectOk = false;
+        try { if (bb != null) bb.release(); } catch (Exception ignored) {}
+        eq = null; bb = null; effectOk = false;
     }
 
     private void ensureEffect() {
@@ -215,6 +217,9 @@ final class SoundEngine {
             eq = null; effectOk = false; retryAt = now + 20000;
             status = sessEq.isEmpty() ? "Efeito global indisponível nesta central (" + t.getClass().getSimpleName() + ")" : "Ativo por aplicativo (" + sessEq.size() + ")";
         }
+        try { // BassBoost é opcional; se faltar, só o equalizador funciona
+            if (bb == null && eq != null) bb = new BassBoost(0, 0);
+        } catch (Throwable t) { bb = null; }
     }
 
     private void openSession(int s) {
@@ -248,10 +253,10 @@ final class SoundEngine {
             float lo = edges != null && b < edges.length ? edges[b][0] : 25f, hi = edges != null && b < edges.length ? edges[b][1] : 20000f;
             out[b] = EqMath.bandDb(band, lo, hi, pre + headroom, lowDb, highDb);
             // Reforço progressivo de graves pela mesma cadeia EQ já testada na central.
-            // (sem BassBoost nativo: em alguns firmwares ele inverte a sensação de graves)
+            // Evita o BassBoost nativo que em alguns firmwares inverte a sensação de graves.
             float mid=(lo+hi)*.5f;
-            if(mid < 120f) out[b] += bass * 3f;
-            else if(mid < 220f) out[b] += bass * 0.75f;
+            if(mid < 110f) out[b] += bass * 1.5f;
+            else if(mid < 170f) out[b] += bass * 0.5f;
         }
         return out;
     }
@@ -265,6 +270,8 @@ final class SoundEngine {
         if (eq != null) {
             try { setLevels(eq, dbs, active); } catch (Exception e) { releaseEffects(); }
         }
+        // BassBoost separado desativado: o ganho dos graves acima é aplicado pelo EQ.
+        if (bb != null) { try { bb.setEnabled(false); } catch (Exception ignored) {} }
         for (Equalizer e : new ArrayList<>(sessEq.values())) { try { setLevels(e, dbs, active); } catch (Exception ex) { /* sessão morreu */ } }
     }
 
