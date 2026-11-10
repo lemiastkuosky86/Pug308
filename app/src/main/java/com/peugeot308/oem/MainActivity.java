@@ -22,13 +22,17 @@ import java.io.*;
 import org.json.*;
 import android.view.*;
 import android.widget.*;
+import android.text.SpannableStringBuilder;
+import android.text.Spanned;
+import android.text.style.ForegroundColorSpan;
+import android.text.style.StyleSpan;
 import java.text.*;
 import java.util.*;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
- * Peugeot 308 OEM Launcher v1.37
+ * Peugeot 308 OEM Launcher v1.39
  * - Visual "concessionária": superfícies planas, ícones vetoriais, tipografia em hierarquia
  * - Tema automático dia/noite (nascer/pôr do sol), escuro ou claro
  * - Estados de toque, escala uniforme (sem distorcer), cache de ícones, aceleração por hardware
@@ -53,7 +57,7 @@ public class MainActivity extends Activity {
     private long homeIdleTransitionAt = SystemClock.uptimeMillis();
     private boolean lastHomeIdleTarget = false;
     private long lastHomeInteraction = SystemClock.uptimeMillis();
-    private String lyricsCacheKey = "", lyricsCacheText = "";
+    private String lyricsCacheKey = "", lyricsCacheText = "", lyricsCacheSync = "";
     private boolean lyricsLoading = false;
     private String radarError = "Ainda não consultado";
     private String radarLastDetail = "Aguardando primeira consulta";
@@ -409,6 +413,9 @@ public class MainActivity extends Activity {
     private final int[] dockOrder = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
     private final boolean[] dockEnabled = {true, true, true, true, false, true, true, true, true, true};
     private final ArrayList<String> pinnedPackages = new ArrayList<>();
+    // A ordem e os nomes curtos pertencem somente ao launcher; não alteram os aplicativos.
+    private final ArrayList<String> appOrder = new ArrayList<>();
+    private final HashMap<String,String> appAliases = new HashMap<>();
     private final String[] names = {"Waze", "Rádio", "Spotify", "Telefone", "Bluetooth", "Apps", "Config.", "Casa", "Trabalho", "Último app"};
     private final String[] packages = {"com.waze", "com.jancar.radio", "com.spotify.music", "com.jancar.bluetooth", "", "", "", "", "", ""};
 
@@ -427,7 +434,7 @@ public class MainActivity extends Activity {
             updateDrivingMode();
             pushSoundState();
             checkAlerts();
-            if (computeNight() != night) applyTheme();
+            if (effectiveNight() != night) applyTheme();
             // Brilho, rede e sessão são checados em cadências independentes.
             if (brightnessMode == BRIGHT_AUTO && tickCount % 60 == 0) applyBrightness();
             if (tickCount % 3 == 0) refreshConnections();
@@ -462,48 +469,23 @@ public class MainActivity extends Activity {
         int h = c.get(Calendar.HOUR_OF_DAY);
         return h < 6 || h >= 18;
     }
+    private boolean effectiveNight() {
+        return ThemePalette.create(presetIndex, themeMode, isNightByClock(), accentBase).dark;
+    }
     private void applyTheme() {
-        night = computeNight();
-        int base = baseOf(presetIndex);
-        if (night && base == 1) { // preto puro: baixo ofuscamento, luz âmbar
-            cBg0 = 0xff000000; cBg1 = 0xff050505; cHead = 0xff000000;
-            cSurfTop = 0xff171717; cSurfBot = 0xff0E0E0E; cSurf2 = 0xff202020;
-            cHair = 0x24FFFFFF; cText = 0xffF1EDE5; cMuted = 0xffA8A49D; cDim = 0xff77746E;
-            cShadow = 0x99000000; cTrack = 0x2AFFFFFF; cOk = 0xff3DDC84; cBad = 0xffFF5C6C;
-        } else if (night && base == 2) { // cinza chumbo
-            cBg0 = 0xff16191D; cBg1 = 0xff1F2328; cHead = 0xff13161A;
-            cSurfTop = 0xff2C3137; cSurfBot = 0xff24282E; cSurf2 = 0xff353B43;
-            cHair = 0x20FFFFFF; cText = 0xffECEEF1; cMuted = 0xffA2A8B0; cDim = 0xff737A83;
-            cShadow = 0x66000000; cTrack = 0x2AFFFFFF; cOk = 0xff3DDC84; cBad = 0xffFF5C6C;
-        } else if (night) {
-            cBg0 = 0xff080C12; cBg1 = 0xff10161F; cHead = 0xff0D131B;
-            cSurfTop = 0xff1A222D; cSurfBot = 0xff121820; cSurf2 = 0xff202A37;
-            cHair = 0x1FFFFFFF; cText = 0xffF2F5F9; cMuted = 0xffA0ACBC; cDim = 0xff6F7C8D;
-            cShadow = 0x66000000; cTrack = 0x26FFFFFF; cOk = 0xff3DDC84; cBad = 0xffFF5C6C;
-        } else if (base != 0) { // dia: cinza neutro (sem tingimento)
-            cBg0 = 0xffE4E5E7; cBg1 = 0xffF1F2F3; cHead = 0xffF8F8F9;
-            cSurfTop = 0xffFFFFFF; cSurfBot = 0xffF3F4F5; cSurf2 = 0xffE8E9EB;
-            cHair = 0x1F0F1720; cText = 0xff0F1720; cMuted = 0xff566272; cDim = 0xff8793A2;
-            cShadow = 0x221E2A3C; cTrack = 0x1F0F1720; cOk = 0xff14A44D; cBad = 0xffE5384F;
-        } else {
-            cBg0 = 0xffE3E8EE; cBg1 = 0xffF0F3F7; cHead = 0xffF8FAFC;
-            cSurfTop = 0xffFFFFFF; cSurfBot = 0xffF3F5F8; cSurf2 = 0xffE7EBF0;
-            cHair = 0x1F0F1720; cText = 0xff0F1720; cMuted = 0xff566272; cDim = 0xff8793A2;
-            cShadow = 0x221E2A3C; cTrack = 0x1F0F1720; cOk = 0xff14A44D; cBad = 0xffE5384F;
-        }
-        if (base == 0 && presetIndex > NAVY_START) { // tema colorido: tinge levemente as superfícies com a cor do tema
-            float k = night ? .12f : .07f; int t = PRESET_ACCENTS[presetIndex];
-            cBg0 = tintC(cBg0, t, k); cBg1 = tintC(cBg1, t, k); cHead = tintC(cHead, t, k);
-            cSurfTop = tintC(cSurfTop, t, k); cSurfBot = tintC(cSurfBot, t, k); cSurf2 = tintC(cSurf2, t, k);
-        }
-        accent = night ? accentBase : lightAccent(accentBase);
-        onAccent = lum(accent) > .6f ? 0xff0B1015 : Color.WHITE;
+        ThemePalette palette=ThemePalette.create(presetIndex, themeMode, isNightByClock(), accentBase);
+        night=palette.dark;
+        cBg0=palette.bg0; cBg1=palette.bg1; cHead=palette.head;
+        cSurfTop=palette.surfTop; cSurfBot=palette.surfBot; cSurf2=palette.surf2;
+        cHair=palette.hair; cText=palette.text; cMuted=palette.muted; cDim=palette.dim;
+        cShadow=palette.shadow; cTrack=palette.track; cOk=palette.ok; cBad=palette.bad;
+        accent=palette.accent; onAccent=palette.onAccent;
+        // Tema define somente a aparência: intensidade da tela é uma escolha independente.
         applyBrightness();
         if (dashboard != null) dashboard.invalidate();
     }
     private static int tintC(int base, int tint, float k) { return mix(base, 0xff000000 | (tint & 0xffffff), k); }
     private static float lum(int c) { return (0.299f * Color.red(c) + 0.587f * Color.green(c) + 0.114f * Color.blue(c)) / 255f; }
-    private static int lightAccent(int c) { return lum(c) > .55f ? mix(c, 0xff000000, .38f) : c; } // contraste no tema claro
     private void setPreset(int i) {
         presetIndex = Math.max(0, Math.min(PRESET_NAMES.length - 1, i));
         accentBase = PRESET_ACCENTS[presetIndex];
@@ -541,7 +523,7 @@ public class MainActivity extends Activity {
         if (brightnessMode == BRIGHT_AUTO) saveBrightnessMode(BRIGHT_MIN);
         else if (brightnessMode == BRIGHT_MIN) saveBrightnessMode(BRIGHT_MAX);
         else saveBrightnessMode(BRIGHT_AUTO);
-        snack("Brilho: " + brightnessModeName() + " (" + brightnessPercent() + "%)");
+        snack("Brilho solicitado: " + brightnessModeName() + " (" + brightnessPercent() + "%)");
     }
     /** A janela funciona sem permissão. O brilho global só é tentado se WRITE_SETTINGS existir. */
     private void applyBrightness() {
@@ -565,7 +547,7 @@ public class MainActivity extends Activity {
             choiceRow(root, "Modo de brilho", new String[]{"Automático (dia/noite)", "Mínimo", "Máximo", "Manual"},
                     brightnessMode, mode -> { saveBrightnessMode(mode); dismissQuick(); openBrightnessQuickMenu(); });
             divider(root);
-            TextView level = label("Brilho: " + brightnessPercent() + "% • " + brightnessModeName(), 18, cText, true);
+            TextView level = label("Brilho solicitado: " + brightnessPercent() + "% • " + brightnessModeName(), 18, cText, true);
             root.addView(level);
             SeekBar seek = new SeekBar(this);
             seek.setMax(95); // de 5% até 100%; nunca apaga completamente a tela
@@ -578,7 +560,7 @@ public class MainActivity extends Activity {
                     getPreferences(0).edit().putInt("brightness_manual", manualBrightness).apply();
                     if (brightnessMode != BRIGHT_MANUAL) saveBrightnessMode(BRIGHT_MANUAL);
                     else { appliedBrightnessPct = -1; applyBrightness(); }
-                    level.setText("Brilho: " + brightnessPercent() + "% • Manual");
+                    level.setText("Brilho solicitado: " + brightnessPercent() + "% • Manual");
                 }
                 @Override public void onStartTrackingTouch(SeekBar bar) {}
                 @Override public void onStopTrackingTouch(SeekBar bar) {}
@@ -589,15 +571,15 @@ public class MainActivity extends Activity {
                 brightNight = val; if (brightDay < val) brightDay = val;
                 getPreferences(0).edit().putInt("bright_night", brightNight).putInt("bright_day", brightDay).apply();
                 appliedBrightnessPct = -1; applyBrightness();
-                level.setText("Brilho: " + brightnessPercent() + "% • " + brightnessModeName());
+                level.setText("Brilho solicitado: " + brightnessPercent() + "% • " + brightnessModeName());
             });
             stepperRow(root, "Brilho máximo", brightDay, 10, 100, 5, "%", val -> {
                 brightDay = Math.max(val, brightNight);
                 getPreferences(0).edit().putInt("bright_day", brightDay).apply();
                 appliedBrightnessPct = -1; applyBrightness();
-                level.setText("Brilho: " + brightnessPercent() + "% • " + brightnessModeName());
+                level.setText("Brilho solicitado: " + brightnessPercent() + "% • " + brightnessModeName());
             });
-            root.addView(label("Ajuste da iluminação dentro do launcher. O brilho geral da Jancar só muda se o Android permitir.",12,cMuted,false));
+            root.addView(label("O percentual indica o valor pedido ao Android. A iluminação física da Jancar pode ser diferente.",12,cMuted,false));
             if (!Settings.System.canWrite(this)) {
                 LinearLayout perms = new LinearLayout(this); root.addView(perms);
                 actionButton(perms,"Permissão de brilho do sistema",() -> {
@@ -694,6 +676,7 @@ public class MainActivity extends Activity {
         } catch (Exception ignored) { for (int i = 0; i < N_DOCK; i++) dockOrder[i] = i; }
         for (int i = 0; i < N_DOCK; i++) dockEnabled[i] = i != 6 && prefs.getBoolean("dock_enabled_" + i, i != 4);
         for (String pkg : prefs.getString("pinned_apps", "").split(",")) if (!pkg.isEmpty() && !pinnedPackages.contains(pkg)) pinnedPackages.add(pkg);
+        loadAppPersonalization(prefs);
         weatherCity = prefs.getString("city", "");
         weatherAuto = prefs.getBoolean("weather_auto", false);
         brandTitle = prefs.getString("brand_title", "PEUGEOT 308");
@@ -1141,6 +1124,30 @@ public class MainActivity extends Activity {
             });
         });
     }
+    /** Verifica se o Android/MCU reconhece realmente um controle como dispositivo de entrada HID. */
+    private void showGamepadDiagnostic() {
+        StringBuilder report=new StringBuilder("CONTROLES RECONHECIDOS PELO ANDROID\n\n");
+        int found=0;
+        for(int id:InputDevice.getDeviceIds()) {
+            InputDevice device=InputDevice.getDevice(id);
+            if(device==null)continue;
+            int src=device.getSources();
+            boolean gamepad=(src & InputDevice.SOURCE_GAMEPAD)==InputDevice.SOURCE_GAMEPAD ||
+                    (src & InputDevice.SOURCE_JOYSTICK)==InputDevice.SOURCE_JOYSTICK;
+            if(!gamepad)continue;
+            found++;
+            report.append("• ").append(device.getName()).append("\n")
+                  .append("Fabricante: ").append(device.getVendorId())
+                  .append(" • Produto: ").append(device.getProductId()).append("\n\n");
+        }
+        if(found==0)report.append("Nenhum controle de jogo HID detectado.\n\n")
+                .append("Se o Bluetooth apenas mostra 'Wireless Controller' e não conclui o pareamento, " )
+                .append("tente usar as Configurações Bluetooth do Android, não apenas o aplicativo de telefone da Jancar. " )
+                .append("Como teste alternativo, conecte o DualShock 4 por cabo micro-USB de DADOS à porta USB da central.");
+        else report.append("O Android reconheceu o controle. Confira os comandos no emulador.");
+        new AlertDialog.Builder(this).setTitle("Controle PS4 • diagnóstico")
+                .setMessage(report.toString()).setPositiveButton("Fechar",null).show();
+    }
     private void openConnectionQuickMenu(){
         if(drivingMode){snack("Configure as conexões com o carro parado");return;}
         quickPanel("CONEXÕES • WI-FI + BT",root->{
@@ -1157,6 +1164,8 @@ public class MainActivity extends Activity {
             LinearLayout bt=new LinearLayout(this);root.addView(bt);
             actionButton(bt,"Dispositivos",()->{dismissQuick();openSystemSetting(Settings.ACTION_BLUETOOTH_SETTINGS);});
             actionButton(bt,"Escolher OBD2",()->{dismissQuick();chooseObdAdapter();});
+            LinearLayout gamepad=new LinearLayout(this);root.addView(gamepad);
+            actionButton(gamepad,"Testar controle USB / PS4",()->{dismissQuick();showGamepadDiagnostic();});
             root.addView(label("As ações do sistema podem abrir a tela nativa da Jancar. O launcher não troca sozinho o Bluetooth.",12,cMuted,false));
         });
     }
@@ -1539,80 +1548,123 @@ public class MainActivity extends Activity {
         }
         dialog.show();
     }
-    /** Letras por LRCLIB: diálogo estilizado como os painéis do próprio launcher. */
+    /** Letras sincronizadas LRC: segue a posição da sessão Spotify sem serviço adicional. */
+    private void showTimedLyrics(final Dialog dialog, final TextView content, final ScrollView scrolling,
+            final List<SyncedLyrics.Line> timed, final String title, final String artist) {
+        if(timed==null || timed.isEmpty())return;
+        final StringBuilder full=new StringBuilder();
+        final int[] starts=new int[timed.size()],ends=new int[timed.size()];
+        for(int i=0;i<timed.size();i++) {
+            starts[i]=full.length();
+            String line=timed.get(i).text;
+            full.append(line.isEmpty()?"♪":line).append('\n');
+            ends[i]=full.length()-1;
+        }
+        final int[] last={Integer.MIN_VALUE};
+        final Runnable[] update={null};
+        update[0] = () -> {
+            if(!dialog.isShowing() || !title.equals(songTitle) || !artist.equals(songArtist))return;
+            int current=SyncedLyrics.activeLine(timed,livePosition());
+            if(current!=last[0]) {
+                last[0]=current;
+                SpannableStringBuilder styled=new SpannableStringBuilder(full.toString());
+                for(int i=0;i<timed.size();i++) {
+                    int color=i==current?accent:i<current?cDim:cText;
+                    styled.setSpan(new ForegroundColorSpan(color),starts[i],ends[i],Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                    if(i==current)styled.setSpan(new StyleSpan(Typeface.BOLD),starts[i],ends[i],Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                }
+                content.setText(styled);
+                if(current>=0) {
+                    final int offset=starts[current];
+                    scrolling.post(() -> {
+                        if(!dialog.isShowing() || content.getLayout()==null)return;
+                        int line=content.getLayout().getLineForOffset(offset);
+                        int target=Math.max(0,content.getLayout().getLineTop(line)-scrolling.getHeight()/3);
+                        scrolling.smoothScrollTo(0,target);
+                    });
+                }
+            }
+            handler.postDelayed(update[0],350L);
+        };
+        dialog.setOnDismissListener(d -> handler.removeCallbacks(update[0]));
+        update[0].run();
+    }
+    /** Janela estilizada: LRC sincronizado quando disponível; caso contrário texto comum. */
     private void openLyrics() {
-        final String title = songTitle == null ? "" : songTitle.trim();
-        final String artist = songArtist == null ? "" : songArtist.trim();
-        final String key = title + " • " + artist;
-        final boolean ownMatch = title.equalsIgnoreCase(userLyricsSong) && !userLyrics.trim().isEmpty();
-        final Dialog dialog = new Dialog(this);
+        final String title=songTitle==null?"":songTitle.trim();
+        final String artist=songArtist==null?"":songArtist.trim();
+        final String key=title+" • "+artist;
+        final boolean ownMatch=title.equalsIgnoreCase(userLyricsSong) && !userLyrics.trim().isEmpty();
+        final Dialog dialog=new Dialog(this);
         dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
-        LinearLayout root = vertical();
-        root.setBackground(popBg(22));
-        root.setPadding(dp(26), dp(20), dp(26), dp(18));
-        LinearLayout heading = new LinearLayout(this); heading.setGravity(Gravity.CENTER_VERTICAL);
-        TextView titleView = label("♫  LETRAS", 24, accent, true);
-        heading.addView(titleView, new LinearLayout.LayoutParams(0, dp(50), 1));
-        TextView close = label("✕", 23, cText, true);
-        close.setGravity(Gravity.CENTER); close.setBackground(panel(cSurf2, 12));
-        heading.addView(close, new LinearLayout.LayoutParams(dp(49), dp(45)));
-        close.setOnClickListener(v -> dialog.dismiss());
+        LinearLayout root=vertical();root.setBackground(popBg(22));
+        root.setPadding(dp(26),dp(20),dp(26),dp(18));
+        LinearLayout heading=new LinearLayout(this);heading.setGravity(Gravity.CENTER_VERTICAL);
+        TextView titleView=label("♫  LETRAS",24,accent,true);
+        heading.addView(titleView,new LinearLayout.LayoutParams(0,dp(50),1));
+        TextView close=label("✕",23,cText,true);close.setGravity(Gravity.CENTER);close.setBackground(panel(cSurf2,12));
+        heading.addView(close,new LinearLayout.LayoutParams(dp(49),dp(45)));close.setOnClickListener(v->dialog.dismiss());
         root.addView(heading);
-        root.addView(label(title, 20, cText, true));
-        root.addView(label(artist, 16, cMuted, false));
-        View line = new View(this); line.setBackgroundColor(cHair);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, dp(1));
-        lp.setMargins(0, dp(15), 0, dp(10)); root.addView(line, lp);
-        ScrollView scrolling = new ScrollView(this);
-        TextView content = label("", 17, cText, false);
-        content.setLineSpacing(dp(5), 1.20f);
-        content.setPadding(dp(10), dp(12), dp(10), dp(18));
-        content.setTextIsSelectable(true);
-        scrolling.addView(content);
-        root.addView(scrolling, new LinearLayout.LayoutParams(-1, 0, 1));
-        LinearLayout actions = new LinearLayout(this); actions.setGravity(Gravity.CENTER_VERTICAL);
-        root.addView(actions, new LinearLayout.LayoutParams(-1, dp(58)));
-        actionButton(actions, "Abrir Spotify", () -> {dialog.dismiss(); launch(2);});
-        actionButton(actions, "Inserir letra", () -> {
+        TextView song=label(title,20,cText,true);song.setSingleLine(true);
+        song.setEllipsize(android.text.TextUtils.TruncateAt.END);root.addView(song);
+        TextView performer=label(artist,16,cMuted,false);performer.setSingleLine(true);
+        performer.setEllipsize(android.text.TextUtils.TruncateAt.END);root.addView(performer);
+        View line=new View(this);line.setBackgroundColor(cHair);
+        LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,dp(1));
+        lp.setMargins(0,dp(15),0,dp(10));root.addView(line,lp);
+        ScrollView scrolling=new ScrollView(this);scrolling.setFillViewport(false);
+        TextView content=label("",18,cText,false);content.setGravity(Gravity.TOP);
+        content.setLineSpacing(dp(7),1.20f);content.setPadding(dp(10),dp(12),dp(10),dp(18));
+        scrolling.addView(content);root.addView(scrolling,new LinearLayout.LayoutParams(-1,0,1));
+        TextView source=label("",12,cMuted,false);root.addView(source);
+        LinearLayout actions=new LinearLayout(this);actions.setGravity(Gravity.CENTER_VERTICAL);
+        root.addView(actions,new LinearLayout.LayoutParams(-1,dp(58)));
+        actionButton(actions,"Abrir Spotify",()->{dialog.dismiss();launch(2);});
+        actionButton(actions,"Inserir letra",()->{
             dialog.dismiss();
-            popupInput("Letras autorizadas", "Cole texto de sua autoria ou autorizado", ownMatch ? userLyrics : "", v -> {
-                userLyrics = v; userLyricsSong = title;
+            popupInput("Letras autorizadas","Cole texto de sua autoria ou autorizado",ownMatch?userLyrics:"",v->{
+                userLyrics=v;userLyricsSong=title;
                 getPreferences(0).edit().putString("lyrics_text",v).putString("lyrics_song",title).apply();
             });
         });
-        dialog.setContentView(root);
-        showBig(dialog, .72f, .82f);
-        if (ownMatch) { content.setText(userLyrics); return; }
-        if (title.isEmpty() || title.startsWith("Nenhuma música") || artist.isEmpty()) {
-            content.setText("Abra o Spotify e toque uma música. Ative o acesso às notificações para reconhecer título e artista.");
+        dialog.setContentView(root);showBig(dialog,.72f,.82f);
+        if(ownMatch) {content.setText(userLyrics);source.setText("Texto pessoal • sem sincronização");return;}
+        if(title.isEmpty() || title.startsWith("Nenhuma música") || artist.isEmpty()) {
+            content.setText("Abra o Spotify e toque uma música. Permita o acesso às notificações para reconhecer a faixa.");return;
+        }
+        if(key.equals(lyricsCacheKey) && !lyricsCacheText.isEmpty()) {
+            List<SyncedLyrics.Line> timed=SyncedLyrics.parse(lyricsCacheSync);
+            if(!timed.isEmpty()) {source.setText("LRCLIB • acompanhando a música");showTimedLyrics(dialog,content,scrolling,timed,title,artist);}
+            else {content.setText(lyricsCacheText);source.setText("LRCLIB • letra sem marcações de tempo");}
             return;
         }
-        if (key.equals(lyricsCacheKey) && !lyricsCacheText.isEmpty()) {
-            content.setText(lyricsCacheText + "\n\nFonte: LRCLIB • dados de terceiros"); return;
-        }
-        content.setText("Buscando letra pela LRCLIB…\nÉ necessária conexão à internet.");
-        new Thread(() -> {
-            String result = null;
+        content.setText("Buscando letra na LRCLIB…\nRequer internet.");
+        new Thread(()->{
+            String result=null,synced="";
             try {
-                String url = "https://lrclib.net/api/get?track_name=" + URLEncoder.encode(title,"UTF-8") +
-                    "&artist_name=" + URLEncoder.encode(artist,"UTF-8");
-                JSONObject data = readJson(url);
-                if (!data.optBoolean("instrumental",false)) {
-                    result = data.optString("plainLyrics","");
-                    if (result.isEmpty() || "null".equals(result)) result = plainFromLrc(data.optString("syncedLyrics",""));
-                } else result = "Faixa instrumental (sem letra).";
-            } catch (Exception ignored) {}
-            final String textResult = result;
-            handler.post(() -> {
-                if (!dialog.isShowing()) return;
-                if (textResult == null || textResult.trim().isEmpty()) {
+                String url="https://lrclib.net/api/get?track_name="+URLEncoder.encode(title,"UTF-8")+
+                    "&artist_name="+URLEncoder.encode(artist,"UTF-8");
+                JSONObject data=readJson(url);
+                if(!data.optBoolean("instrumental",false)) {
+                    synced=data.optString("syncedLyrics","");
+                    if("null".equals(synced))synced="";
+                    result=data.optString("plainLyrics","");
+                    if(result.isEmpty()||"null".equals(result))result=plainFromLrc(synced);
+                } else result="Faixa instrumental (sem letra).";
+            } catch(Exception ignored) {}
+            final String fetched=result, syncedLrc=synced;
+            handler.post(()->{
+                if(!dialog.isShowing())return;
+                if(fetched==null||fetched.trim().isEmpty()) {
                     content.setText("Letra não encontrada ou serviço indisponível.\n\nTente abrir no Spotify ou inserir um texto autorizado.");
                 } else {
-                    lyricsCacheKey = key; lyricsCacheText = textResult;
-                    content.setText(textResult + "\n\nFonte: LRCLIB • dados de terceiros");
+                    lyricsCacheKey=key;lyricsCacheText=fetched;lyricsCacheSync=syncedLrc;
+                    List<SyncedLyrics.Line> timed=SyncedLyrics.parse(syncedLrc);
+                    if(!timed.isEmpty()) {source.setText("LRCLIB • acompanhando a música");showTimedLyrics(dialog,content,scrolling,timed,title,artist);}
+                    else {content.setText(fetched);source.setText("LRCLIB • letra sem marcações de tempo");}
                 }
             });
-        }, "lyrics-lrclib").start();
+        },"PugLyrics").start();
     }
     private String plainFromLrc(String lrc) {
         if(lrc==null || lrc.trim().isEmpty()) return "";
@@ -1669,17 +1721,19 @@ public class MainActivity extends Activity {
                 View dot = new View(this) {
                     final Paint preview = new Paint(3);
                     @Override protected void onDraw(Canvas cv) {
-                        float w=getWidth(),h=getHeight(); int bg=idx<5?0xff0b0d11:idx<12?0xff292c30:0xff0b1b2d;
+                        float w=getWidth(),h=getHeight();
+                        ThemePalette shown=ThemePalette.create(idx,themeMode,isNightByClock(),PRESET_ACCENTS[idx]);
+                        int bg=shown.bg0, light=shown.accent;
                         preview.setColor(bg);cv.drawRoundRect(0,0,w,h,dp(5),dp(5),preview);
-                        int light=PRESET_ACCENTS[idx];
+                        preview.setColor(shown.head);cv.drawRoundRect(0,0,w,h*.14f,dp(2),dp(2),preview);
                         preview.setColor(light);
-                        cv.drawRoundRect(w*.06f,h*.12f,w*.30f,h*.17f,dp(2),dp(2),preview);
-                        preview.setColor(idx<12?0xff44494e:0xff18334a);
+                        cv.drawRoundRect(w*.06f,h*.10f,w*.94f,h*.22f,dp(2),dp(2),preview);
+                        preview.setColor(shown.surfTop);
                         for(int z=0;z<3;z++)cv.drawRoundRect(w*(.06f+.30f*z),h*.30f,w*(.29f+.30f*z),h*.84f,dp(2),dp(2),preview);
                         preview.setColor(light);cv.drawRoundRect(w*.12f,h*.53f,w*.23f,h*.57f,dp(1),dp(1),preview);
                         cv.drawRoundRect(w*.42f,h*.67f,w*.52f,h*.71f,dp(1),dp(1),preview);
                         cv.drawCircle(w*.76f,h*.53f,dp(2),preview);
-                        preview.setColor(sel?cText:cHair);preview.setStyle(Paint.Style.STROKE);preview.setStrokeWidth(dp(sel?2:1));
+                        preview.setColor(sel?accent:shown.hair);preview.setStyle(Paint.Style.STROKE);preview.setStrokeWidth(dp(sel?2:1));
                         cv.drawRoundRect(1,1,w-1,h-1,dp(5),dp(5),preview);preview.setStyle(Paint.Style.FILL);
                     }
                 };
@@ -1994,8 +2048,7 @@ public class MainActivity extends Activity {
         } catch (Exception e) { snack("Controle de mídia indisponível"); }
         // Retorno visual rápido; não aguarda a próxima varredura geral (até 15s).
         // O callback do Spotify é a fonte preferencial; estes são só fallbacks leves.
-        handler.postDelayed(this::refreshCurrentMedia, 150);
-        handler.postDelayed(this::refreshCurrentMedia, 650);
+        handler.postDelayed(this::refreshCurrentMedia, 320);
         if (dashboard != null) dashboard.invalidate();
     }
     private void openNotificationAccess() {
@@ -2019,7 +2072,115 @@ public class MainActivity extends Activity {
         lastCandStamp = 0; dashboard.invalidate();
     }
     private final HashMap<String, String> labelCache = new HashMap<>();
+    private void loadAppPersonalization(SharedPreferences prefs) {
+        appOrder.clear(); appAliases.clear();
+        try {
+            JSONArray order = new JSONArray(prefs.getString("app_custom_order", "[]"));
+            for (int i=0;i<order.length();i++) { String pkg=order.optString(i, "");
+                if (!pkg.isEmpty() && !appOrder.contains(pkg)) appOrder.add(pkg); }
+            JSONObject aliases = new JSONObject(prefs.getString("app_custom_names", "{}"));
+            Iterator<String> keys=aliases.keys();
+            while (keys.hasNext()) {String pkg=keys.next(), name=aliases.optString(pkg, "").trim();
+                if (!name.isEmpty()) appAliases.put(pkg,name);}
+        } catch (Exception ignored) { appOrder.clear(); appAliases.clear(); }
+    }
+    private void saveAppPersonalization() {
+        JSONArray order = new JSONArray(); for(String pkg:appOrder) order.put(pkg);
+        JSONObject names = new JSONObject();
+        try { for(Map.Entry<String,String> e:appAliases.entrySet()) names.put(e.getKey(),e.getValue()); }
+        catch (JSONException ignored) {}
+        getPreferences(0).edit().putString("app_custom_order",order.toString())
+                .putString("app_custom_names",names.toString()).apply();
+        if (dashboard != null) dashboard.invalidate();
+    }
+    private String displayAppLabel(String pkg,String original) {
+        String alias=appAliases.get(pkg);
+        return alias!=null && !alias.trim().isEmpty() ? alias : original;
+    }
+    private void ensureAppOrder(List<android.content.pm.ResolveInfo> apps) {
+        boolean changed=false;
+        for (android.content.pm.ResolveInfo info:apps) {
+            String pkg=info.activityInfo.packageName;
+            if (!appOrder.contains(pkg)) { appOrder.add(pkg); changed=true; }
+        }
+        if(changed) saveAppPersonalization();
+    }
+    private void sortAppList(ArrayList<android.content.pm.ResolveInfo> apps) {
+        Collections.sort(apps, (a,b) -> {
+            int ai=appOrder.indexOf(a.activityInfo.packageName), bi=appOrder.indexOf(b.activityInfo.packageName);
+            if(ai>=0 && bi>=0 && ai!=bi) return Integer.compare(ai,bi);
+            if(ai>=0 && bi<0) return -1;
+            if(bi>=0 && ai<0) return 1;
+            return a.loadLabel(getPackageManager()).toString().compareToIgnoreCase(b.loadLabel(getPackageManager()).toString());
+        });
+    }
+    /** Lista curta com a mesma paleta da Home, inclusive nos temas claros e coloridos. */
+    private void themedChoices(String title, String[] options, java.util.function.IntConsumer selected) {
+        if (drivingMode) { snack("Personalize com o carro parado"); return; }
+        final Dialog dialog=new Dialog(this);
+        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
+        LinearLayout root=vertical();root.setPadding(dp(23),dp(18),dp(23),dp(18));
+        root.setBackground(panel(cBg1,20));
+        LinearLayout heading=new LinearLayout(this);heading.setGravity(Gravity.CENTER_VERTICAL);
+        TextView textTitle=label(title,20,cText,true);textTitle.setSingleLine(true);
+        textTitle.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        heading.addView(textTitle,new LinearLayout.LayoutParams(0,dp(50),1));
+        TextView close=label("✕",23,cText,true);close.setGravity(Gravity.CENTER);
+        close.setBackground(panel(cSurf2,12));
+        heading.addView(close,new LinearLayout.LayoutParams(dp(45),dp(44)));
+        close.setOnClickListener(v->dialog.dismiss());root.addView(heading);
+        divider(root);
+        ScrollView scroll=new ScrollView(this);
+        LinearLayout rows=vertical();rows.setPadding(0,dp(2),0,dp(4));scroll.addView(rows);
+        for(int i=0;i<options.length;i++){
+            final int which=i;
+            TextView choice=label(options[i],16,cText,false);
+            choice.setBackground(panel(cSurf2,12));choice.setPadding(dp(16),dp(9),dp(14),dp(9));
+            choice.setMaxLines(2);choice.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            LinearLayout.LayoutParams rp=new LinearLayout.LayoutParams(-1,dp(52));rp.bottomMargin=dp(7);
+            rows.addView(choice,rp);
+            choice.setOnClickListener(v->{feedback();dialog.dismiss();selected.accept(which);});
+        }
+        root.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));
+        dialog.setContentView(root);
+        activeDialog=dialog;dialog.setOnDismissListener(d->{if(activeDialog==dialog)activeDialog=null;});
+        showBig(dialog,.62f,.78f);
+    }
+
+    private void appOptions(String pkg,String original,ArrayList<android.content.pm.ResolveInfo> apps,Runnable render) {
+        String shown=displayAppLabel(pkg,original);
+        boolean favorite=pinnedPackages.contains(pkg);
+        String[] actions=favorite ? new String[]{"Renomear atalho", "Restaurar nome original",
+                "Subir no menu Apps", "Descer no menu Apps", "Mover favorito para a esquerda", "Mover favorito para a direita"}
+                : new String[]{"Renomear atalho", "Restaurar nome original",
+                "Subir no menu Apps", "Descer no menu Apps"};
+        themedChoices(shown,actions,which->{
+            if (which==0) {
+                promptText("Nome curto do aplicativo", original, shown, value->{
+                    String name=value.trim();
+                    if(name.length()>25) name=name.substring(0,25);
+                    if(name.isEmpty() || name.equals(original)) appAliases.remove(pkg);
+                    else appAliases.put(pkg,name);
+                    saveAppPersonalization();render.run();
+                }); return;
+            }
+            if(which==1) appAliases.remove(pkg);
+            if(which==2 || which==3) {
+                int at=appOrder.indexOf(pkg),to=at+(which==2?-1:1);
+                if(at>=0 && to>=0 && to<appOrder.size()) Collections.swap(appOrder,at,to);
+            }
+            if(which==4 || which==5) {
+                int at=pinnedPackages.indexOf(pkg),to=at+(which==4?-1:1);
+                if(at>=0 && to>=0 && to<pinnedPackages.size()) {
+                    Collections.swap(pinnedPackages,at,to);savePinned();
+                }
+            }
+            saveAppPersonalization();sortAppList(apps);render.run();
+        });
+    }
     private String appLabel(String pkg) {
+        if(pkg==null || pkg.isEmpty())return "Aplicativo";
+        String alias=appAliases.get(pkg); if(alias!=null && !alias.isEmpty()) return alias;
         String cached = labelCache.get(pkg);
         if (cached != null) return cached;
         String label;
@@ -2180,13 +2341,14 @@ public class MainActivity extends Activity {
         Intent query = new Intent(Intent.ACTION_MAIN); query.addCategory(Intent.CATEGORY_LAUNCHER);
         apps.addAll(getPackageManager().queryIntentActivities(query, 0));
         Collections.sort(apps, (a, b) -> a.loadLabel(getPackageManager()).toString().compareToIgnoreCase(b.loadLabel(getPackageManager()).toString()));
+        ensureAppOrder(apps); sortAppList(apps);
         LinearLayout root = vertical(); root.setPadding(dp(20), dp(14), dp(20), dp(16)); root.setBackground(panel(cBg1, 20));
         LinearLayout header = new LinearLayout(this); header.setGravity(Gravity.CENTER_VERTICAL);
         header.addView(label("APLICATIVOS", 22, cText, true), new LinearLayout.LayoutParams(0, dp(48), 1));
         TextView close = label("✕", 22, cText, true); close.setGravity(Gravity.CENTER); close.setBackground(panel(cSurf2, 12));
         header.addView(close, new LinearLayout.LayoutParams(dp(48), dp(44))); root.addView(header);
         divider(root);
-        root.addView(label("Toque para abrir  •  ☆ fixar  •  MIN/ORIG alterna o ícone", 13, cMuted, false), new LinearLayout.LayoutParams(-1, dp(33)));
+        root.addView(label("Toque para abrir • ☆ favorito • ⋮ renomear / ordenar • MIN/ORIG ícone", 13, cMuted, false), new LinearLayout.LayoutParams(-1, dp(33)));
         EditText search = new EditText(this); search.setSingleLine(true); search.setTextSize(16);
         search.setTextColor(cText); search.setHintTextColor(cDim); search.setHint("Pesquisar aplicativos...");
         search.setPadding(dp(14), 0, dp(14), 0); search.setBackground(panel(cSurf2, 12));
@@ -2203,8 +2365,10 @@ public class MainActivity extends Activity {
             String filter = search.getText().toString().trim().toLowerCase(Locale.getDefault());
             for (android.content.pm.ResolveInfo info : apps) {
                 String pkg = info.activityInfo.packageName;
-                String name = info.loadLabel(getPackageManager()).toString();
-                if (!name.toLowerCase(Locale.getDefault()).contains(filter)) continue;
+                String original = info.loadLabel(getPackageManager()).toString();
+                String name = displayAppLabel(pkg,original);
+                if (!name.toLowerCase(Locale.getDefault()).contains(filter) &&
+                        !original.toLowerCase(Locale.getDefault()).contains(filter)) continue;
                 shown++;
                 LinearLayout item = new LinearLayout(this); item.setGravity(Gravity.CENTER_VERTICAL);
                 item.setPadding(dp(12), dp(5), dp(8), dp(5)); item.setBackground(panel(cSurfTop, 14));
@@ -2216,7 +2380,12 @@ public class MainActivity extends Activity {
                 boolean pinned = pinnedPackages.contains(pkg);
                 TextView star = label(pinned ? "★" : "☆", 28, pinned ? cOk : cDim, true);
                 star.setGravity(Gravity.CENTER); star.setBackground(panel(cSurf2, 12));
-                item.addView(star, new LinearLayout.LayoutParams(dp(55), dp(48)));
+                item.addView(star, new LinearLayout.LayoutParams(dp(49), dp(48)));
+                TextView options=label("⋮",28,accent,true);
+                options.setGravity(Gravity.CENTER); options.setBackground(panel(cSurf2,12));
+                LinearLayout.LayoutParams op=new LinearLayout.LayoutParams(dp(45),dp(48));op.setMargins(dp(5),0,0,0);
+                item.addView(options,op);
+                options.setOnClickListener(v -> appOptions(pkg,original,apps,render[0]));
                 if(pinned){
                     TextView style=label(originalAppIcons.contains(pkg)?"ORIG":"MIN",11,accent,true);
                     style.setGravity(Gravity.CENTER);style.setBackground(panel(cSurf2,12));
@@ -2272,6 +2441,9 @@ public class MainActivity extends Activity {
         b.append("Clima GPS: ").append(weatherAuto ? "ligado" : "desligado").append('\n');
         b.append("Cidade detectada: ").append(weatherDetail.isEmpty() ? "indisponível" : weatherDetail).append('\n');
         b.append("Radar: ").append(radarEnabled ? "ligado" : "desligado").append(" • ").append(radarCount).append(" pontos online • ").append(radarStore.personalCount()).append(" pessoais • ").append(radarError).append('\n');
+        b.append("Tema: ").append(PRESET_NAMES[presetIndex]).append(" • ")
+                .append(themeMode==0?"Automático":themeMode==1?"Escuro":"Claro")
+                .append(" • paleta ").append(night?"escura":"clara").append('\n');
         b.append("Brilho: ").append(brightnessModeName()).append(" • ").append(brightnessPercent()).append("% • Botão visível: ").append(topBrightnessVisible ? "SIM" : "NÃO").append('\n');
         b.append("Fonte do veículo: ").append(vehicleDataSource==1?"OBD2 Bluetooth":"Jancar CANBOX").append('\n');
         if(vehicleDataSource==1)b.append("OBD2: ").append(obdState).append('\n');
@@ -2303,15 +2475,17 @@ public class MainActivity extends Activity {
         TextView report = label(diagnosticReport(), 13, cText, false);
         report.setTextIsSelectable(true);report.setPadding(dp(18),dp(14),dp(18),dp(14));
         scroll.addView(report);
-        AlertDialog dialog = new AlertDialog.Builder(this)
-            .setTitle("Diagnóstico • Peugeot Launcher")
-            .setView(scroll)
-            .setPositiveButton("Fechar", null)
-            .setNeutralButton("Copiar", (d,w) -> copyTestReport())
-            .setNegativeButton("Atualizar", null)
-            .create();
-        dialog.setOnShowListener(d -> dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setOnClickListener(v -> report.setText(diagnosticReport())));
-        dialog.show();
+        Dialog dialog=new Dialog(this);dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
+        LinearLayout root=vertical();root.setPadding(dp(22),dp(14),dp(22),dp(14));
+        root.setBackground(panel(cBg1,20));
+        root.addView(label("DIAGNÓSTICO • PEUGEOT LAUNCHER",20,cText,true));divider(root);
+        root.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));
+        LinearLayout actions=new LinearLayout(this);actions.setGravity(Gravity.CENTER_VERTICAL);
+        root.addView(actions,new LinearLayout.LayoutParams(-1,dp(54)));
+        actionButton(actions,"Atualizar",()->report.setText(diagnosticReport()));
+        actionButton(actions,"Copiar",this::copyTestReport);
+        actionButton(actions,"Fechar",dialog::dismiss);
+        dialog.setContentView(root);showBig(dialog,.75f,.84f);
     }
 
     // ---------------------------------------------------------------- configurações (abas, sem rolagem)
@@ -2368,13 +2542,12 @@ public class MainActivity extends Activity {
         Collections.sort(apps, (a, b) -> a.loadLabel(getPackageManager()).toString().compareToIgnoreCase(b.loadLabel(getPackageManager()).toString()));
         String[] labels = new String[apps.size()];
         for (int i=0;i<apps.size();i++) labels[i] = apps.get(i).loadLabel(getPackageManager()).toString();
-        new AlertDialog.Builder(this).setTitle("Aplicativo do botão personalizado")
-            .setItems(labels, (d, index) -> {
-                topCustomPackage = apps.get(index).activityInfo.packageName;
-                getPreferences(0).edit().putString("top_custom_package", topCustomPackage).apply();
-                if (dashboard != null) dashboard.invalidate();
-                snack("Botão personalizado: " + labels[index]);
-            }).setNegativeButton("Cancelar", null).show();
+        themedChoices("Aplicativo do botão personalizado",labels,index -> {
+            topCustomPackage=apps.get(index).activityInfo.packageName;
+            getPreferences(0).edit().putString("top_custom_package",topCustomPackage).apply();
+            if(dashboard!=null)dashboard.invalidate();
+            snack("Botão personalizado: " + labels[index]);
+        });
     }
     private void showAudioDiagnostic() {
         String detail;
@@ -2393,11 +2566,13 @@ public class MainActivity extends Activity {
         feedback();
         LinearLayout root = vertical(); root.setPadding(dp(20), dp(16), dp(20), dp(16)); root.setBackground(panel(cBg1, 20));
         LinearLayout header = new LinearLayout(this); header.setGravity(Gravity.CENTER_VERTICAL);
-        header.addView(label("CONFIGURAÇÕES", 22, cText, true), new LinearLayout.LayoutParams(0, dp(53), 1));
+        final TextView settingsTitle=label("CONFIGURAÇÕES", 22, cText, true);
+        header.addView(settingsTitle, new LinearLayout.LayoutParams(0, dp(53), 1));
         TextView close = label("✕", 24, cText, true); close.setGravity(Gravity.CENTER); close.setBackground(panel(cSurf2, 12));
         header.addView(close, new LinearLayout.LayoutParams(dp(48), dp(44))); root.addView(header);
         View headerLine = new View(this); headerLine.setBackgroundColor(cHair); root.addView(headerLine, new LinearLayout.LayoutParams(-1, dp(1)));
-        root.addView(label("PEUGEOT 308  /  PERSONALIZAÇÃO DO SISTEMA", 12, cDim, false), new LinearLayout.LayoutParams(-1, dp(32)));
+        final TextView settingsCaption=label("PEUGEOT 308  /  PERSONALIZAÇÃO DO SISTEMA", 12, cDim, false);
+        root.addView(settingsCaption, new LinearLayout.LayoutParams(-1, dp(32)));
         LinearLayout tabs = new LinearLayout(this); root.addView(tabs);
         LinearLayout page = vertical(); page.setPadding(0, dp(14), 0, dp(10));
         ScrollView pageScroll = new ScrollView(this); pageScroll.addView(page);
@@ -2407,6 +2582,12 @@ public class MainActivity extends Activity {
         lastSettingsTab = current[0];
         Runnable[] redraw = new Runnable[1];
         redraw[0] = () -> {
+            // Reaplica toda a paleta: não deixa a moldura anterior ao trocar Claro/Escuro/Cor.
+            root.setBackground(panel(cBg1,20));
+            settingsTitle.setTextColor(cText);
+            settingsCaption.setTextColor(cDim);
+            close.setTextColor(cText);close.setBackground(panel(cSurf2,12));
+            headerLine.setBackgroundColor(cHair);
             if(shownTab[0]>=0) lastSettingsScroll[shownTab[0]]=pageScroll.getScrollY();
             final int keepY = shownTab[0] == current[0] ? pageScroll.getScrollY() : lastSettingsScroll[current[0]];
             shownTab[0] = current[0];
@@ -2537,12 +2718,14 @@ public class MainActivity extends Activity {
                         minimalIcons=checked;getPreferences(0).edit().putBoolean("minimal_icons",checked).apply();dashboard.invalidate();
                     });
                     LinearLayout rows = vertical(); page.addView(rows); populateDockRows(rows);
+                    LinearLayout allApps=new LinearLayout(this);page.addView(allApps);
+                    actionButton(allApps,"Organizar / renomear aplicativos",this::picker);
                     divider(page);
                     page.addView(label("ÍCONES DOS APLICATIVOS FIXADOS",14,accent,true));
                     page.addView(label("Escolha o ícone original do aplicativo ou o desenho minimalista para cada favorito.",12,cMuted,false));
                     for(String pkg : new ArrayList<>(pinnedPackages)) {
                         String display;
-                        try{display=getPackageManager().getApplicationLabel(getPackageManager().getApplicationInfo(pkg,0)).toString();}
+                        try{display=appLabel(pkg);}
                         catch(Exception ignored){display=pkg;}
                         final String fixedPkg=pkg;
                         choiceRow(page,display,new String[]{"Minimalista","Original"},originalAppIcons.contains(pkg)?1:0,style->{
@@ -2775,6 +2958,8 @@ public class MainActivity extends Activity {
                     wifiAutoButtons.setPadding(0, dp(8), 0, 0); page.addView(wifiAutoButtons);
                     actionButton(wifiAutoButtons, "Testar ativação", () -> tryAutoEnableWifi(true));
                     actionButton(wifiAutoButtons, "Abrir Wi-Fi", () -> openSystemSetting(Settings.ACTION_WIFI_SETTINGS));
+                    LinearLayout controllerRow=new LinearLayout(this);page.addView(controllerRow);
+                    actionButton(controllerRow,"Diagnosticar controle PS4 / USB",this::showGamepadDiagnostic);
                     page.addView(label("Caso a central recuse a solicitação, use Abrir Wi-Fi. O diagnóstico detalhado aparece no relatório de sistema; não há tentativas repetidas em segundo plano.", 12, cMuted, false));
                     divider(page);
                     page.addView(label("Peugeot 308 OEM Launcher", 21, cText, true));
@@ -3201,7 +3386,7 @@ public class MainActivity extends Activity {
                     weatherLine = w.line; weatherDetail = w.detail; weatherCondition = w.condition; weatherHigh = w.high; weatherLow = w.low;
                     weatherWind = w.wind; weatherRain = w.rain; weatherHumidity = w.humidity; weatherCode = w.code;
                     if (w.sunrise >= 0) { sunriseMin = w.sunrise; sunsetMin = w.sunset; }
-                    if (computeNight() != night) applyTheme();
+                    if (effectiveNight() != night) applyTheme();
                 }
                 dashboard.invalidate();
             });
@@ -3649,21 +3834,20 @@ public class MainActivity extends Activity {
             float sweep = sm < SHINE_MS ? 10 + (sm / (float) SHINE_MS) * (wm + w308 + 70) : Float.NaN;
             shineText(brandTitle, 32, 47, brandFont, cText, accent, tfBold, .025f, sweep);
             float dvx = gx + w308 + 14;
-            ln(dvx, 22, dvx, 50, cHair, 1.5f);
+            if (topWidgetEnabled) ln(dvx, 22, dvx, 50, cHair, 1.5f);
             drawTopWidget(dvx + 14);
             // Grupos proporcionais e espaços reais entre botões; não sobrepor rótulos.
             if (topVolumeVisible) {
-                ln(606, 22, 606, 50, cHair, 1.5f);
-                // Controles diretos: menos, mais e mudo. Somente o HUD central mostra números.
-                // Controles separados por áreas livres para evitar acionar MUDO ao usar o +.
-                topVolumeKey(1, 610, 52, I_MINUS, "Diminuir volume", false);
-                topVolumeKey(2, 675, 52, I_PLUS, "Aumentar volume", false);
-                ln(739, 20, 739, 52, cHair, 1.4f); // divisor entre volume e MUDO
-                topVolumeKey(3, 750, 52, I_MUTE, "Alternar mudo", isMuted());
-                ln(809, 22, 809, 50, cHair, 1.5f);
+                // Três botões iguais, centros equidistantes e apenas UM separador externo.
+                // Um divisor antes do conjunto e outro depois; espaço de 14 px entre áreas de toque.
+                ln(598, 20, 598, 52, cHair, 1.5f);
+                topVolumeKey(1, 604, 58, I_MINUS, "Diminuir volume", false);
+                topVolumeKey(2, 676, 58, I_PLUS, "Aumentar volume", false);
+                topVolumeKey(3, 748, 58, I_MUTE, "Alternar mudo", isMuted());
+                ln(818, 20, 818, 52, cHair, 1.5f);
             }
             // Até quatro atalhos opcionais + Config, com largura proporcional.
-            float left = topVolumeVisible ? 822 : 615;
+            float left = topVolumeVisible ? 826 : 615;
             float right = 1256, spacing = 8;
             // 4 atalhos rápidos + Config fixo. Wi-Fi e Bluetooth são um único submenu.
             ArrayList<Integer> choices = new ArrayList<>();
@@ -3756,8 +3940,10 @@ public class MainActivity extends Activity {
             tc("♫  Letras",ax+art/2,ly+21,14,accent,tfMed);
             float tx=ax+art+19,tw=Math.max(80,x+w-23-tx);
             text(mediaPlaying?"TOCANDO AGORA":"EM PAUSA",tx,y+114,11,accent,tfBold,Paint.Align.LEFT,.06f);
-            t(fit(songTitle,compact?21:27,tfBold,tw),tx,y+151,compact?21:27,cText,tfBold);
-            t(fit(songArtist,compact?16:19,tfReg,tw),tx,y+182,compact?16:19,cMuted,tfReg);
+            canvas.save();canvas.clipRect(tx,y+112,x+w-18,y+200);
+            t(fit(songTitle,compact?21:27,tfBold,Math.max(16,tw-5)),tx,y+151,compact?21:27,cText,tfBold);
+            t(fit(songArtist,compact?16:19,tfReg,Math.max(16,tw-5)),tx,y+182,compact?16:19,cMuted,tfReg);
+            canvas.restore();
             long pos=livePosition();
             float barX=x+25,barY=y+392,barW=w-50,frac=songDuration>0?Math.min(1f,(float)pos/songDuration):0f;
             rr(barX,barY,barW,8,4,cTrack);
@@ -3766,10 +3952,12 @@ public class MainActivity extends Activity {
             hit(25,barX,barY-13,barW,34);
             t(songDuration>0?timeString(pos):"--:--",barX,barY+37,15,cDim,tfReg);
             tr(songDuration>0?timeString(songDuration):"--:--",barX+barW,barY+37,15,cDim,tfReg);
-            float buttonY=y+502,sep=compact?91:117;
-            roundBtn(20,cx-sep,buttonY,compact?35:40,I_PREV,compact?26:30,cSurf2,cText);
-            roundBtn(21,cx,buttonY,compact?46:52,mediaPlaying?I_PAUSE:I_PLAY,compact?36:40,accent,onAccent);
-            roundBtn(22,cx+sep,buttonY,compact?35:40,I_NEXT,compact?26:30,cSurf2,cText);
+            float buttonY=y+502;
+            MediaControlsLayout controls=MediaControlsLayout.forWidth(w,compact,true);
+            float sep=controls.separation;
+            roundBtn(20,cx-sep,buttonY,controls.sideRadius,I_PREV,controls.sideRadius*.76f,cSurf2,cText);
+            roundBtn(21,cx,buttonY,controls.playRadius,mediaPlaying?I_PAUSE:I_PLAY,controls.playRadius*.78f,accent,onAccent);
+            roundBtn(22,cx+sep,buttonY,controls.sideRadius,I_NEXT,controls.sideRadius*.76f,cSurf2,cText);
         }
 
         void drawVehicleIdle(float x,float w,float h) {
@@ -3866,7 +4054,8 @@ public class MainActivity extends Activity {
                 text(mediaPlaying ? "REPRODUZINDO" : "PAUSADO", px + pw / 2, py + 23, 14, mediaPlaying ? cOk : cMuted, tfBold, Paint.Align.CENTER, .06f);
             }
             // capa grande e quadrada (recorte central, sem distorcer)
-            float art = wide ? 300 : 216, ax = x + 32, ay = wide ? 168 : 172;
+            float art = wide ? Math.min(300, w*.36f) : Math.min(216, Math.max(120,w*.34f));
+            float ax = x + 32, ay = wide ? 168 : 172;
             rr(ax, ay, art, art, 24, cSurf2);
             if (albumArt != null) {
                 p.reset(); p.setAntiAlias(true); p.setFilterBitmap(true);
@@ -3876,12 +4065,14 @@ public class MainActivity extends Activity {
                 canvas.restore(); rrs(ax, ay, art, art, 24, cHair, 1.2f);
             } else ic(I_NOTE, ax + art / 2, ay + art / 2, art * .4f, accent);
             hit(23, ax, ay, art, art); // fora da capa permanece na Home
-            float tx = ax + art + (wide ? 40 : 24), tw = x + w - 32 - tx;
+            float tx = ax + art + (wide ? 36 : 22), tw = Math.max(24, x + w - 28 - tx);
             float ts = wide ? 36 : 28, as = wide ? 24 : 20;
             float yl = wide ? 214 : 202, yt = wide ? 262 : 246, ya = wide ? 298 : 280, yh = wide ? 336 : 318;
             text(mediaPlaying ? "TOCANDO AGORA" : (mediaCtl != null ? "EM PAUSA" : mediaSource.toUpperCase(Locale.getDefault())), tx, yl, 14, accent, tfBold, Paint.Align.LEFT, .1f);
-            t(fit(songTitle, ts, tfBold, tw), tx, yt, ts, cText, tfBold);
-            t(fit(songArtist, as, tfReg, tw), tx, ya, as, cMuted, tfReg);
+            canvas.save(); canvas.clipRect(tx, y+112, x+w-22, y+263);
+            t(fit(songTitle, ts, tfBold, tw-3), tx, yt, ts, cText, tfBold);
+            t(fit(songArtist, as, tfReg, tw-3), tx, ya, as, cMuted, tfReg);
+            canvas.restore();
             if (mediaCtl == null) t(fit(cachedSpotifyPreview ? "Última música • aguardando conexão" :
                     (mediaPermission ? "Toque na capa para abrir o Spotify" : "Permitir acesso às notificações"),
                     17, tfMed, tw), tx, yh, 17, accent, tfMed);
@@ -3894,11 +4085,12 @@ public class MainActivity extends Activity {
             tr(songDuration > 0 ? timeString(songDuration) : "--:--", tx + tw, ty, wide ? 17 : 16, cDim, tfReg);
             seekX = tx; seekW = tw;
             hit(25, tx - 6, by - 18, tw + 12, 44);
-            // controles grandes
-            float cxc = tx + tw / 2, cyc = wide ? 474 : 475;
-            roundBtn(20, cxc - 124, cyc, 46, I_PREV, 34, cSurf2, cText);
-            roundBtn(21, cxc, cyc, 58, mediaPlaying ? I_PAUSE : I_PLAY, 46, accent, onAccent);
-            roundBtn(22, cxc + 124, cyc, 46, I_NEXT, 34, cSurf2, cText);
+            // Distribuição conforme o espaço REAL: em 3 cards, usa toda a largura do Spotify.
+            float cxc=x+w/2f, cyc=wide?474:475;
+            MediaControlsLayout controls=MediaControlsLayout.forWidth(w,!wide,false);
+            roundBtn(20,cxc-controls.separation,cyc,controls.sideRadius,I_PREV,controls.sideRadius*.72f,cSurf2,cText);
+            roundBtn(21,cxc,cyc,controls.playRadius,mediaPlaying?I_PAUSE:I_PLAY,controls.playRadius*.76f,accent,onAccent);
+            roundBtn(22,cxc+controls.separation,cyc,controls.sideRadius,I_NEXT,controls.sideRadius*.72f,cSurf2,cText);
             // Letras discretas centralizadas logo abaixo da capa, longe do título e dos controles.
             float lw=wide ? art : art - 32, lh=wide ? 31 : 27;
             float lx=ax+(art-lw)/2f, ly=ay+art+(wide?12:5);
@@ -4075,6 +4267,7 @@ public class MainActivity extends Activity {
         }
         void invalidateHeader() { invalidate((int) ox, (int) oy, (int) (ox + 720 * sx), (int) (oy + 80 * sy)); }
         Runnable lpTask = null; boolean lpFired = false;
+        float downX,downY; long downAt;
         void cancelLp() { if (lpTask != null) { handler.removeCallbacks(lpTask); lpTask = null; } }
         Hit hitAt(float x, float y) {
             // Painel MUDO fica por cima dos cards: seu toque precisa ter prioridade.
@@ -4099,6 +4292,7 @@ public class MainActivity extends Activity {
             switch (act) {
                 case MotionEvent.ACTION_DOWN: {
                     Hit h = hitAt(x, y); pressedId = h == null ? -1 : h.id; lpFired = false; cancelLp();
+                    downX=x;downY=y;downAt=SystemClock.uptimeMillis();
                     if (h != null && h.id == 49) {
                         // Pressão real por 3 segundos; ao soltar não executa o toque rápido também.
                         lpTask = () -> {
@@ -4113,12 +4307,20 @@ public class MainActivity extends Activity {
                     }
                     invalidate(); break;
                 }
-                case MotionEvent.ACTION_MOVE: { if (pressedId != -1) { Hit h = hitAt(x, y); if (h == null || h.id != pressedId) { pressedId = -1; cancelLp(); invalidate(); } } break; }
+                case MotionEvent.ACTION_MOVE: { if (pressedId != -1) {
+                    // Tolerância a movimentos leves do dedo durante os 3 s do botão Brilho.
+                    if(pressedId==49 && Math.hypot(x-downX,y-downY)<32) break;
+                    Hit h = hitAt(x, y); if (h == null || h.id != pressedId) { pressedId = -1; cancelLp(); invalidate(); }
+                } break; }
                 case MotionEvent.ACTION_CANCEL: { pressedId = -1; cancelLp(); invalidate(); break; }
                 case MotionEvent.ACTION_UP: {
                     cancelLp();
                     if (lpFired) { lpFired = false; pressedId = -1; invalidate(); break; }
-                    int id = pressedId; pressedId = -1; invalidate(); if (id != -1) handle(id, x, y); break;
+                    int id = pressedId; pressedId = -1; invalidate();
+                    if(id==49 && SystemClock.uptimeMillis()-downAt>=2950L) {
+                        feedback();openBrightnessQuickMenu();break;
+                    }
+                    if (id != -1) handle(id, x, y); break;
                 }
                 default: break;
             }

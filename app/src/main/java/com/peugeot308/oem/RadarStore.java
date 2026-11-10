@@ -49,19 +49,27 @@ public final class RadarStore {
     public synchronized void replaceImported(List<Point> points){
         imported.clear();imported.addAll(points.subList(0,Math.min(points.size(),MAX)));index();
     }
+    /** Distância geodésica em metros, usada após o filtro por células para não aceitar
+     *  radares além do raio solicitado (o filtro antigo era apenas retangular). */
+    private static double distanceMeters(double lat1,double lon1,double lat2,double lon2){
+        double dLat=Math.toRadians(lat2-lat1),dLon=Math.toRadians(lon2-lon1);
+        double la1=Math.toRadians(lat1),la2=Math.toRadians(lat2);
+        double h=Math.pow(Math.sin(dLat/2),2)+Math.cos(la1)*Math.cos(la2)*Math.pow(Math.sin(dLon/2),2);
+        return 12742000.0*Math.asin(Math.min(1.0,Math.sqrt(Math.max(0,h))));
+    }
     public synchronized List<Point> nearby(double lat,double lon,double meters,int mask){
         ArrayList<Point> found=new ArrayList<>();
-        if(!Double.isFinite(lat)||!Double.isFinite(lon))return found;
+        if(!Double.isFinite(lat)||!Double.isFinite(lon)||!Double.isFinite(meters)||meters<=0)return found;
         int a=grid(lat),b=grid(lon);
-        // Uma célula ~2.2 km em latitude: a vizinhança 3x3 cobre os alertas de 1 km.
-        int radius= Math.max(1,(int)Math.ceil(meters/1700));
+        int radius=Math.max(1,(int)Math.ceil(meters/1700));
+        double maxLatDiff=meters/110574.0;
+        double maxLonDiff=meters/(111320.0*Math.max(.12,Math.cos(Math.toRadians(lat))));
         for(int x=a-radius;x<=a+radius;x++)for(int y=b-radius;y<=b+radius;y++){
             ArrayList<Point> pts=bins.get(cellKey(x,y));if(pts==null)continue;
             for(Point p:pts){
                 if((mask & (1<<p.type))==0)continue;
-                if(Math.abs(p.lat-lat)>meters/110000.0+0.002)continue;
-                if(Math.abs(p.lon-lon)>meters/75000.0+0.003)continue;
-                found.add(p);
+                if(Math.abs(p.lat-lat)>maxLatDiff || Math.abs(p.lon-lon)>maxLonDiff)continue;
+                if(distanceMeters(lat,lon,p.lat,p.lon)<=meters)found.add(p);
             }
         }
         return found;
