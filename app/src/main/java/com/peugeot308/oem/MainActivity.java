@@ -154,6 +154,7 @@ public class MainActivity extends Activity {
     private int drivingThreshold = 10, drvAbove = 0, drvBelow = 0, drvLost = 0;
     private long drivingTestUntil = 0;
     private Dialog activeDialog;
+    private Dialog quickDialog; // Diálogo rápido; correção do erro de compilação v1.44
     private SoundEngine snd;      // v1.14: motor de som (equalizador, loudness, volume por velocidade)
     private Dialog eqDialog;
     private final int[] topSlot = {0, 4, 9}; // mini cards do topo: id do indicador (-1 = vazio)
