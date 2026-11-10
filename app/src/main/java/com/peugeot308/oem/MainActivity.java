@@ -28,7 +28,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
- * Peugeot 308 OEM Launcher v1.36
+ * Peugeot 308 OEM Launcher v1.37
  * - Visual "concessionária": superfícies planas, ícones vetoriais, tipografia em hierarquia
  * - Tema automático dia/noite (nascer/pôr do sol), escuro ou claro
  * - Estados de toque, escala uniforme (sem distorcer), cache de ícones, aceleração por hardware
@@ -416,6 +416,7 @@ public class MainActivity extends Activity {
     private int previousVolume = 5;
     private int tickCount = 0;
     private Runnable rampTask;
+    private int rampTarget = -1;
     private ConnectivityManager.NetworkCallback netCallback;
     private String updateBase = DEFAULT_SERVER;
     private String ghRepo = "lemiastkuosky86/Pug308", notifiedVersion = ""; private int updateSource = 0; private boolean autoUpdate = true, updateChecking = false;
@@ -781,6 +782,10 @@ public class MainActivity extends Activity {
         super.onPause();
     }
     @Override protected void onDestroy() {
+        if (rampTask != null) { // não deixa o volume preso no meio do fade/mudo
+            try { audio.setStreamVolume(AudioManager.STREAM_MUSIC, rampTarget, 0); } catch (Exception ignored) {}
+            rampTask = null;
+        }
         dismissQuick();
         try { if (eqDialog != null) eqDialog.dismiss(); } catch (Exception ignored) {}
         if (snd != null) snd.saveNow();
@@ -1752,6 +1757,7 @@ public class MainActivity extends Activity {
     }
     private void rampVolume(final int target, final int totalMs, final Runnable done) {
         cancelRamp();
+        rampTarget = target;
         final int from = audio.getStreamVolume(AudioManager.STREAM_MUSIC), steps = Math.abs(target - from);
         if (steps == 0) { if (done != null) done.run(); return; }
         final int dir = target > from ? 1 : -1;
@@ -2012,9 +2018,15 @@ public class MainActivity extends Activity {
         getPreferences(0).edit().putString("pinned_apps", android.text.TextUtils.join(",", pinnedPackages)).apply();
         lastCandStamp = 0; dashboard.invalidate();
     }
+    private final HashMap<String, String> labelCache = new HashMap<>();
     private String appLabel(String pkg) {
-        try { return getPackageManager().getApplicationLabel(getPackageManager().getApplicationInfo(pkg, 0)).toString(); }
-        catch (Exception ex) { return pkg; }
+        String cached = labelCache.get(pkg);
+        if (cached != null) return cached;
+        String label;
+        try { label = getPackageManager().getApplicationLabel(getPackageManager().getApplicationInfo(pkg, 0)).toString(); }
+        catch (Exception ex) { return pkg; } // falha não entra no cache: o app pode ser instalado depois
+        labelCache.put(pkg, label);
+        return label;
     }
     private void launchPackage(String pkg) {
         try { Intent intent = getPackageManager().getLaunchIntentForPackage(pkg); if (intent == null) throw new Exception(); noteRecent(pkg); startActivity(intent); }
@@ -2908,6 +2920,7 @@ public class MainActivity extends Activity {
                 final String m = ex instanceof FileNotFoundException ? "Repositório ou release não encontrado. O repositório precisa ser público e ter ao menos uma Release com um arquivo .apk."
                     : String.valueOf(ex.getMessage()).contains("403") ? "O GitHub limitou as consultas por agora. Tente de novo em alguns minutos."
                     : "Confira a internet da central.\n\n" + ex.getMessage();
+                getPreferences(0).edit().putLong("upd_last", System.currentTimeMillis() - 11L * 3600 * 1000).apply(); // falhou: tenta de novo só em ~1 h
                 if (!silent) runOnUiThread(() -> popupInfo("Não foi possível verificar", m));
             } finally { updateChecking = false; }
         }).start();
@@ -3206,6 +3219,7 @@ public class MainActivity extends Activity {
         } finally { conn.disconnect(); }
     }
     private String weatherDescription(int code) {
+        if (code < 0) return "--";
         if (code == 0) return "Céu limpo"; if (code <= 2) return "Poucas nuvens"; if (code == 3) return "Nublado"; if (code <= 48) return "Neblina";
         if (code <= 57) return "Garoa"; if (code <= 67) return "Chuva"; if (code <= 77) return "Neve";
         if (code <= 82) return "Pancadas de chuva"; if (code <= 86) return "Neve"; if (code >= 95) return "Trovoadas"; return "Tempo variável";
@@ -3236,7 +3250,7 @@ public class MainActivity extends Activity {
         Canvas canvas;
 
         Dashboard() { super(MainActivity.this); setHapticFeedbackEnabled(true); }
-        void clearIcons() { iconCache.clear(); }
+        void clearIcons() { iconCache.clear(); labelCache.clear(); }
         /** Clipa o redesenho ao progresso do Spotify, sem invalidar toda a tela por segundo. */
         void invalidateMediaProgress() {
             if (getWidth() == 0 || getHeight() == 0) return;
