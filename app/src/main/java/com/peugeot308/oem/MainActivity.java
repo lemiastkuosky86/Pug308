@@ -32,7 +32,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
- * Peugeot 308 OEM Launcher v1.42
+ * Peugeot 308 OEM Launcher v1.43
  * - Visual "concessionária": superfícies planas, ícones vetoriais, tipografia em hierarquia
  * - Tema automático dia/noite (nascer/pôr do sol), escuro ou claro
  * - Estados de toque, escala uniforme (sem distorcer), cache de ícones, aceleração por hardware
@@ -188,6 +188,12 @@ public class MainActivity extends Activity {
     private long radarFetchAt = 0;
     private boolean radarFetching = false;
     private final HashMap<Long, Long> radarAlerted = new HashMap<>();
+    private RadarStore.Point activeRadar;
+    private double activeRadarPreviousDistance = Double.MAX_VALUE;
+    private int activeRadarIncreasing = 0;
+    private long activeRadarBeepAt=0, activeRadarMutedUntil=0;
+    private boolean radarMergeImport=false;
+
     private static final long SHINE_PERIOD = 3200L, SHINE_MS = 850L;
     private static final long SPEED_ALERT_DURATION_MS = 7000L; // v1.33: 4 s antigos + 3 s solicitados
     private static final float SET_SCALE = 1.5f; // tamanho dos menus de configuração
@@ -727,6 +733,19 @@ public class MainActivity extends Activity {
         // Uma tentativa por inicialização; sem polling nem serviço residente.
         new Thread(() -> {
             try {
+                // Base embutida é independente da base pessoal e não é sobrescrita por importações.
+                try(InputStream asset=getAssets().open("tracksource_7ways.zip");
+                    java.util.zip.ZipInputStream zip=new java.util.zip.ZipInputStream(new BufferedInputStream(asset))){
+                    ArrayList<RadarStore.Point> bundled=new ArrayList<>();java.util.zip.ZipEntry entry;
+                    while((entry=zip.getNextEntry())!=null){
+                        if(entry.isDirectory()||!entry.getName().toLowerCase(Locale.ROOT).endsWith(".txt"))continue;
+                        ByteArrayOutputStream buf=new ByteArrayOutputStream();byte[] b=new byte[8192];int n;
+                        while((n=zip.read(b))>0){if(buf.size()+n>9000000)throw new IOException("Lista grande demais");buf.write(b,0,n);}
+                        RadarStore.ParseResult parsed=RadarStore.parseAuto(new InputStreamReader(new ByteArrayInputStream(buf.toByteArray()),"UTF-8"),entry.getName(),200000);
+                        bundled.addAll(parsed.points);zip.closeEntry();
+                    }
+                    radarStore.setBundled(RadarStore.dedupe(bundled));
+                }catch(Exception e){android.util.Log.w("PugRadar","Base Tracksource indisponível",e);}
                 radarStore.load(new File(getFilesDir(), "radar_personal.dat"));
                 handler.post(() -> { radarImportStatus = radarStore.personalCount()+" pontos carregados"; if (dashboard!=null)dashboard.invalidate(); });
             } catch (Exception error) {
@@ -853,33 +872,67 @@ public class MainActivity extends Activity {
                 }
             } else if (v <= speedLimit - 2) overNow = false;
         } else overNow = false;
-        if (!radarEnabled || radarTypesMask==0 || !gpsFresh() || Double.isNaN(gpsLat)) return;
-        boolean stale = radarFetchAt == 0 || nowEl - radarFetchAt > 1200000 || haversine(gpsLat, gpsLon, radarFetchLat, radarFetchLon) > 3500;
-        // A base pessoal fica sempre disponível offline. OSM só é atualizado com internet.
-        if (netOnline && !radarFetching && stale && (radarFetchAt == 0 || nowEl - radarFetchAt > 120000)) fetchRadars(gpsLat, gpsLon);
-        if (!radarVisual && !radarAudio) return;
-        if (gpsAccuracy > 150 || v < 9 || gpsBearing < 0) return;
-        double reach = Math.max(250,Math.min(700,v/3.6*12));
-        double best = Double.MAX_VALUE; RadarStore.Point bestPoint = null;
-        for (RadarStore.Point point : radarStore.nearby(gpsLat,gpsLon,reach,radarTypesMask)) {
-            double d = haversine(gpsLat,gpsLon,point.lat,point.lon);
-            if(d >= best || d>reach)continue;
-            double diff = Math.abs(((bearingTo(gpsLat,gpsLon,point.lat,point.lon)-gpsBearing+540)%360)-180);
-            if(diff>50)continue;
-            Long last=radarAlerted.get(point.id);
-            if(last!=null&&nowEl-last<300000L)continue;
-            best=d;bestPoint=point;
+        if (!radarEnabled || radarTypesMask==0 || !gpsFresh() || Double.isNaN(gpsLat)) {
+            clearActiveRadar();return;
         }
-        if(bestPoint==null)return;
-        if(radarAlerted.size()>3000)radarAlerted.clear();
-        radarAlerted.put(bestPoint.id,nowEl);
+        boolean stale = radarFetchAt == 0 || nowEl - radarFetchAt > 1200000 || haversine(gpsLat, gpsLon, radarFetchLat, radarFetchLon) > 3500;
+        if (netOnline && !radarFetching && stale && (radarFetchAt == 0 || nowEl - radarFetchAt > 120000)) fetchRadars(gpsLat, gpsLon);
+        if (!radarVisual && !radarAudio) {clearActiveRadar();return;}
+        // A velocidade e o rumo do GPS são usados para direção; não bloquear com velocidade CAN ausente.
+        float gpsV=gpsFresh()?gpsSpeedKmh:v;
+        if (gpsAccuracy > 100 || gpsV < 5 || gpsBearing < 0) {clearActiveRadar();return;}
+        double reach = Math.max(300,Math.min(700,gpsV/3.6*13));
+        if(activeRadar!=null){
+            double dist=haversine(gpsLat,gpsLon,activeRadar.lat,activeRadar.lon);
+            double bearingDiff=Math.abs(((bearingTo(gpsLat,gpsLon,activeRadar.lat,activeRadar.lon)-gpsBearing+540)%360)-180);
+            // Uma pequena margem depois de ultrapassar a posição protege contra ruído do GPS.
+            if(dist>activeRadarPreviousDistance+6 && dist<150)activeRadarIncreasing++;
+            else if(dist<activeRadarPreviousDistance-3)activeRadarIncreasing=0;
+            activeRadarPreviousDistance=dist;
+            if(activeRadarIncreasing>=2 || (dist>90 && bearingDiff>110) || dist>reach+100){
+                radarAlerted.put(activeRadar.id,nowEl);clearActiveRadar();
+            }
+        }
+        if(activeRadar==null){
+            double best=Double.MAX_VALUE;RadarStore.Point match=null;
+            for(RadarStore.Point point:radarStore.nearby(gpsLat,gpsLon,reach,radarTypesMask)){
+                double d=haversine(gpsLat,gpsLon,point.lat,point.lon);
+                if(d>reach||d>=best)continue;
+                double bearingDiff=Math.abs(((bearingTo(gpsLat,gpsLon,point.lat,point.lon)-gpsBearing+540)%360)-180);
+                if(bearingDiff>55)continue;
+                if(point.dirType!=0){
+                    double headingDiff=Math.abs(((point.heading-gpsBearing+540)%360)-180);
+                    // DirType=2: os dois sentidos opostos; DirType=1: somente o rumo indicado.
+                    if(point.dirType==2)headingDiff=Math.min(headingDiff,Math.abs(180-headingDiff));
+                    if(headingDiff>65)continue;
+                }
+                Long last=radarAlerted.get(point.id);
+                if(last!=null&&nowEl-last<120000)continue;
+                best=d;match=point;
+            }
+            if(match!=null){activeRadar=match;activeRadarPreviousDistance=best;activeRadarIncreasing=0;activeRadarBeepAt=0;}
+        }
+        if(activeRadar==null)return;
+        double dist=haversine(gpsLat,gpsLon,activeRadar.lat,activeRadar.lon);
+        String label=activeRadar.type==RadarStore.MOVEL?"POSSÍVEL RADAR MÓVEL":RadarStore.LABELS[activeRadar.type].toUpperCase(new Locale("pt","BR"));
+        String sub=(Math.max(0,Math.round(dist/10)*10))+" m"+
+                (activeRadar.limit>0&&activeRadar.type<=RadarStore.SEMAFORO_RADAR?" • limite "+activeRadar.limit+" km/h":"");
+        // Não dispara novo popup temporizado: o painel acompanha cada leitura do GPS.
+        if(radarVisual && SystemClock.uptimeMillis() >= activeRadarMutedUntil){
+            alertKind=0;alertTitle=label;alertSub=sub;alertStart=SystemClock.uptimeMillis()-300;
+            alertUntil=SystemClock.uptimeMillis()+1800;
+            if(dashboard!=null)dashboard.invalidate();
+        }
+        if(radarAudio && alertSound){
+            long cadence=dist<50?350:dist<100?600:dist<200?1000:dist<300?1700:3000;
+            if(nowEl-activeRadarBeepAt>=cadence){alertKind=0;alertBeep();activeRadarBeepAt=nowEl;}
+        }
         radarLastAlertAt=nowEl;
-        String distance=(Math.max(10,Math.round(best/10)*10))+" m";
-        String speedLimitTag=bestPoint.limit>0?" • limite "+bestPoint.limit+" km/h":"";
-        String label=bestPoint.type==RadarStore.MOVEL?"POSSÍVEL RADAR MÓVEL":RadarStore.LABELS[bestPoint.type].toUpperCase(new Locale("pt","BR"));
-        if(radarVisual)showAlert(0,label,distance+speedLimitTag,3500,false);
-        if(radarAudio){alertKind=0;alertBeep();}
-
+        if(radarAlerted.size()>3000)radarAlerted.clear();
+    }
+    private void clearActiveRadar(){
+        activeRadar=null;activeRadarPreviousDistance=Double.MAX_VALUE;activeRadarIncreasing=0;
+        if(alertKind==0)alertUntil=0;
     }
     /** Consulta OSM: pontos FIXOS, lombadas, praças de pedágio e alguns sinais.
      *  "Radar móvel" só é disponível como ponto histórico na base pessoal importada. */
@@ -955,12 +1008,12 @@ public class MainActivity extends Activity {
     private void enableRadar(boolean enabled){
         radarEnabled=enabled;getPreferences(0).edit().putBoolean("radar_alert",enabled).apply();
         if(enabled){radarFetchAt=0;radarError="GPS ativo; verificando pontos locais";}
-        else {radarStore.setOnline(Collections.emptyList());radarCount=0;radarFetchAt=0;radarError="Desligado";}
+        else {clearActiveRadar();radarStore.setOnline(Collections.emptyList());radarCount=0;radarFetchAt=0;radarError="Desligado";}
         refreshGpsNeed();if(dashboard!=null)dashboard.invalidate();
     }
     private void saveRadarTypes(){
         getPreferences(0).edit().putInt("radar_types",radarTypesMask).apply();
-        radarAlerted.clear();
+        radarAlerted.clear();clearActiveRadar();
     }
     private void simulateRadarAlert(){simulateRadarAlertType(RadarStore.FIXO);}
     private void simulateRadarAlertType(int type){
@@ -971,6 +1024,15 @@ public class MainActivity extends Activity {
         if(!radarVisual&&!radarAudio)snack("Ative aviso visual ou sonoro para testar");
     }
     private void chooseRadarFile(){
+        if(!radarFileLoading){
+            new AlertDialog.Builder(this).setTitle("Importar base offline")
+                .setMessage("Adicionar pontos à base pessoal ou substituir os pontos pessoais? A base Tracksource integrada será preservada.")
+                .setPositiveButton("Adicionar",(d,w)->{radarMergeImport=true;openRadarPicker();})
+                .setNegativeButton("Substituir",(d,w)->{radarMergeImport=false;openRadarPicker();})
+                .setNeutralButton("Cancelar",null).show();
+        }
+    }
+    private void openRadarPicker(){
         if(radarFileLoading){snack("Importação em andamento");return;}
         dismissQuick();
         Intent intent=new Intent(Intent.ACTION_OPEN_DOCUMENT);
@@ -1022,18 +1084,23 @@ public class MainActivity extends Activity {
                                     if(buffer.size()+n>12_000_000)throw new IOException("CSV interno grande demais");
                                     buffer.write(tmp,0,n);
                                 }
-                                RadarStore.ParseResult r=RadarStore.parseCsv(new InputStreamReader(new ByteArrayInputStream(buffer.toByteArray()),"UTF-8"),e.getName(),150000);
+                                RadarStore.ParseResult r=RadarStore.parseAuto(new InputStreamReader(new ByteArrayInputStream(buffer.toByteArray()),"UTF-8"),e.getName(),200000);
                                 points.addAll(r.points);ignored+=r.skipped;
-                                if(points.size()>150000)throw new IOException("Mais de 150 mil pontos");
+                                if(points.size()>200000)throw new IOException("Mais de 200 mil pontos");
                                 z.closeEntry();
                             }
                         }
                     }else{
-                        RadarStore.ParseResult r=RadarStore.parseCsv(new InputStreamReader(in,"UTF-8"),filename,150000);
+                        RadarStore.ParseResult r=RadarStore.parseAuto(new InputStreamReader(in,"UTF-8"),filename,200000);
                         points.addAll(r.points);ignored=r.skipped;
                     }
                 }
                 if(points.isEmpty())throw new IOException("Nenhum ponto reconhecido. Use CSV com longitude, latitude e tipo, ou cabeçalhos latitude/longitude/categoria; confira o formato exportado.");
+                if(radarMergeImport){
+                    // Adição preserva os pontos pessoais anteriores; nunca substitui os embutidos.
+                    points.addAll(radarStore.importedSnapshot());
+                }
+                points=RadarStore.dedupe(points);
                 radarStore.replaceImported(points);
                 radarStore.save(new File(getFilesDir(),"radar_personal.dat"));
                 final int loaded=radarStore.personalCount(),skipped=ignored;
@@ -1101,8 +1168,8 @@ public class MainActivity extends Activity {
             root.addView(label("Radar móvel: pontos históricos/possíveis locais de fiscalização. Não detecta operação policial ao vivo.",12,cMuted,false));
             divider(root);
             section(root,"BASE DE RADARES","Quantidade e atualização reais, sem estimativas");
-            int offlineCount = radarStore.personalCount();
-            root.addView(label(radarOfflineSummary(),17,offlineCount>0?cOk:cBad,true));
+            int offlineCount = radarStore.personalCount()+radarStore.bundledCount();
+            root.addView(label("Tracksource integrado: "+radarStore.bundledCount()+" pontos • base pessoal: "+radarStore.personalCount(),17,offlineCount>0?cOk:cBad,true));
             root.addView(label("Última atualização offline: " + radarImportedDate(),14,cText,false));
             if (offlineCount > 0) {
                 root.addView(label("Arquivo importado: " + radarImportName,12,cMuted,false));
@@ -1119,7 +1186,7 @@ public class MainActivity extends Activity {
             root.addView(label("Indicador do botão: verde = GPS e pontos carregados; amarelo = precisa conferir; cinza = desligado.",12,cMuted,false));
             root.addView(label("Importação: " + radarImportStatus,12,cMuted,false));
             LinearLayout actions=new LinearLayout(this);root.addView(actions);
-            actionButton(actions,"Importar CSV/ZIP",this::chooseRadarFile);
+            actionButton(actions,"Importar TXT/CSV/ZIP",this::chooseRadarFile);
             actionButton(actions,"Diagnóstico",()->{dismissQuick();showRadarDiagnostic();});
             LinearLayout tests=new LinearLayout(this);root.addView(tests);
             actionButton(tests,"Testar aviso",()->{dismissQuick();simulateRadarAlert();});
@@ -1249,6 +1316,7 @@ public class MainActivity extends Activity {
             "\nInternet: " + (netOnline ? "SIM" : "NÃO") +
             "\nConsulta em andamento: " + (radarFetching ? "SIM" : "NÃO") +
             "\nFonte online OSM em 7 km: " + radarCount +
+            "\nBase Tracksource integrada: " + radarStore.bundledCount() + " pontos" +
             "\nBase pessoal offline: " + radarOfflineSummary() +
             "\nÚltima atualização offline: " + radarImportedDate() +
             "\nArquivo: " + radarImportName +
@@ -1959,10 +2027,14 @@ public class MainActivity extends Activity {
             if (image == null) image = m.getBitmap(MediaMetadata.METADATA_KEY_ART);
             if (image == null && mediaIsSpotify && nextTitle.equals(lastSpotifyTitle)
                     && nextArtist.equals(lastSpotifyArtist)) image = lastSpotifyArt;
+            // Alguns firmwares emitem a NOVA música com a capa da faixa anterior.
+            // Não reutilizar o mesmo bitmap na transição até chegar a arte correta.
+            if(trackChanged && !oldCached && image != null && image == albumArt)
+                image = null;
             // Não reatribuir a mesma capa a cada evento de posição: menos carga na GPU.
-            if (trackChanged || (albumArt == null && image != null)) {
+            if (trackChanged || (image != null && albumArt != image)) {
                 artworkChanged = albumArt != image;
-                albumArt = image;
+                albumArt = image; // faixa nova sem capa: nunca mostrar capa antiga
             }
             if (mediaIsSpotify && !nextTitle.equals("Spotify") &&
                     (trackChanged || (image != null && !lastSpotifyQueuedHasArt)))
@@ -4052,65 +4124,35 @@ public class MainActivity extends Activity {
         }
 
         void drawMediaIdle(float x,float w,float h) {
-            float y=96, cx=x+w/2;
+            float y=96;
             card(x,y,w,h);
-            int sourceColor=mediaIsSpotify?0xff1ED760:accent;
-            circle(x+37,y+39,19,sourceColor);
-            ic(I_NOTE,x+37,y+39,21,mediaIsSpotify?0xff06210F:onAccent);
-            t(fit(mediaSource,21,tfMed,w-194),x+67,y+46,21,cText,tfMed);
-            rr(x+w-133,y+24,112,30,15,cSurf2);
-            tc(mediaPlaying?"TOCANDO":"PAUSADO",x+w-77,y+44,12,cMuted,tfBold);
-            boolean compact=w<450;
-            float art=compact?Math.min(166,w*.42f):Math.min(240,w*.39f);
-            float ax=x+24,ay=y+98;
-            rr(ax,ay,art,art,20,cSurf2);
-            if(albumArt!=null) {
+            float pad=12,ax=x+pad,ay=y+pad,aw=w-2*pad,ah=h-2*pad;
+            canvas.save();path.reset();r.set(ax,ay,ax+aw,ay+ah);
+            path.addRoundRect(r,22,22,Path.Direction.CW);canvas.clipPath(path);
+            if(albumArt!=null && !albumArt.isRecycled()){
+                // A capa é ampliada por crop central, preservando proporções originais.
                 p.reset();p.setAntiAlias(true);p.setFilterBitmap(true);
-                canvas.save();path.reset();r.set(ax,ay,ax+art,ay+art);
-                path.addRoundRect(r,20,20,Path.Direction.CW);canvas.clipPath(path);
-                int bw=albumArt.getWidth(),bh=albumArt.getHeight(),side=Math.min(bw,bh);
-                canvas.drawBitmap(albumArt,new Rect((bw-side)/2,(bh-side)/2,(bw-side)/2+side,(bh-side)/2+side),r,p);
-                canvas.restore();rrs(ax,ay,art,art,20,cHair,1.2f);
-            } else ic(I_NOTE,ax+art/2,ay+art/2,art*.39f,accent);
-            hit(23, ax, ay, art, art); // somente a capa abre Spotify
-            // O botão ocupa exatamente a largura da capa e permanece abaixo dela.
-            float ly=ay+art+12,lh=32;
-            boolean pressed=hit(26,ax,ly,art,lh);
-            rr(ax,ly,art,lh,11,pressed?mix(cSurf2,accent,.25f):cSurf2);
-            tc("♫  Letras",ax+art/2,ly+21,14,accent,tfMed);
-            float tx=ax+art+19,tw=Math.max(80,x+w-23-tx);
-            text(mediaPlaying?"TOCANDO AGORA":"EM PAUSA",tx,y+114,11,accent,tfBold,Paint.Align.LEFT,.06f);
-            canvas.save();canvas.clipRect(tx,y+112,x+w-18,y+200);
-            t(fit(songTitle,compact?21:27,tfBold,Math.max(16,tw-5)),tx,y+151,compact?21:27,cText,tfBold);
-            t(fit(songArtist,compact?16:19,tfReg,Math.max(16,tw-5)),tx,y+182,compact?16:19,cMuted,tfReg);
-            canvas.restore();
-            long pos=livePosition();
-            float barX=x+25,barY=y+392,barW=w-50,frac=songDuration>0?Math.min(1f,(float)pos/songDuration):0f;
-            rr(barX,barY,barW,8,4,cTrack);
-            if(frac>0)rr(barX,barY,Math.max(8,barW*frac),8,4,accent);
-            seekX=barX;seekW=barW;
-            hit(25,barX,barY-13,barW,34);
-            t(songDuration>0?timeString(pos):"--:--",barX,barY+37,15,cDim,tfReg);
-            tr(songDuration>0?timeString(songDuration):"--:--",barX+barW,barY+37,15,cDim,tfReg);
-            // Modo recolhido com 3 cards: repetir o conjunto centralizado
-            // em faixa inferior; os botoes nao ficam perdidos na area direita.
-            float buttonY=y+502;
-            if (vehicleMenuEnabled && w<600f) {
-                float rackX=x+24f,rackY=y+444f,rackW=w-48f,rackH=120f;
-                rr(rackX,rackY,rackW,rackH,21,mix(cSurfTop,cSurf2,.64f));
-                rrs(rackX,rackY,rackW,rackH,21,cHair,1.0f);
-                MediaControlsLayout controls=MediaControlsLayout.forFooter(rackX+22f,rackX+rackW-22f,true);
-                float center=controls.centerX;
-                roundBtn(20,center-controls.separation,buttonY,controls.sideRadius,I_PREV,controls.sideRadius*.76f,cSurf2,cText);
-                roundBtn(21,center,buttonY,controls.playRadius,mediaPlaying?I_PAUSE:I_PLAY,controls.playRadius*.78f,accent,onAccent);
-                roundBtn(22,center+controls.separation,buttonY,controls.sideRadius,I_NEXT,controls.sideRadius*.76f,cSurf2,cText);
+                int bw=albumArt.getWidth(),bh=albumArt.getHeight();
+                float srcRatio=bw/(float)bh,dstRatio=aw/ah;
+                int sw=bw,sh=bh;
+                if(srcRatio>dstRatio)sw=Math.max(1,Math.round(bh*dstRatio));
+                else sh=Math.max(1,Math.round(bw/dstRatio));
+                canvas.drawBitmap(albumArt,new Rect((bw-sw)/2,(bh-sh)/2,(bw+sw)/2,(bh+sh)/2),r,p);
             } else {
-                MediaControlsLayout controls=MediaControlsLayout.forWidth(w,compact,true);
-                float sep=controls.separation;
-                roundBtn(20,cx-sep,buttonY,controls.sideRadius,I_PREV,controls.sideRadius*.76f,cSurf2,cText);
-                roundBtn(21,cx,buttonY,controls.playRadius,mediaPlaying?I_PAUSE:I_PLAY,controls.playRadius*.78f,accent,onAccent);
-                roundBtn(22,cx+sep,buttonY,controls.sideRadius,I_NEXT,controls.sideRadius*.76f,cSurf2,cText);
+                rr(ax,ay,aw,ah,22,cSurf2);
+                ic(I_NOTE,ax+aw/2,ay+ah*.44f,Math.min(120,aw*.25f),accent);
             }
+            // Degradê interno no rodapé, com tipografia legível sobre qualquer capa.
+            p.reset();p.setAntiAlias(true);
+            p.setShader(new LinearGradient(ax,ay+ah*.49f,ax,ay+ah,
+                new int[]{0x00000000,0xBB000000,0xF5000000},null,Shader.TileMode.CLAMP));
+            canvas.drawRect(ax,ay+ah*.49f,ax+aw,ay+ah,p);p.setShader(null);
+            float tx=ax+22,ty=ay+ah-91;
+            t(fit(songTitle,Math.min(30,w*.055f),tfBold,aw-44),tx,ty,Math.min(30,w*.055f),Color.WHITE,tfBold);
+            t(fit(songArtist,Math.min(20,w*.04f),tfReg,aw-44),tx,ty+33,Math.min(20,w*.04f),0xffDDDDDD,tfReg);
+            t(mediaIsSpotify?"● Spotify":"♫ "+mediaSource,tx,ty+64,13,0xffA4E5B6,tfMed);
+            canvas.restore();
+            // No modo recolhido o toque serve para revelar os botões, não abrir o Spotify.
         }
 
         void drawVehicleIdle(float x,float w,float h) {
@@ -4454,7 +4496,13 @@ public class MainActivity extends Activity {
                 lastHomeInteraction=SystemClock.uptimeMillis();
                 if(wasIdle && y>555) { pressedId=-1;invalidate();return true; }
             }
-            if (SystemClock.uptimeMillis() <= alertUntil) { // qualquer toque fecha o aviso
+            if (SystemClock.uptimeMillis() <= alertUntil && activeRadar != null) {
+                // O aviso permanece atualizado, mas não impede o usuário de operar a multimídia.
+                // Toque sobre o aviso silencia só o painel por 10 segundos (som segue ativo).
+                if(act==MotionEvent.ACTION_UP && x>=310 && x<=970 && y>=240 && y<=410){
+                    activeRadarMutedUntil=SystemClock.uptimeMillis()+10000;alertUntil=0;invalidate();return true;
+                }
+            } else if (SystemClock.uptimeMillis() <= alertUntil) {
                 pressedId = -1; if (act == MotionEvent.ACTION_UP) { alertUntil = 0; invalidate(); } return true;
             }
             switch (act) {
