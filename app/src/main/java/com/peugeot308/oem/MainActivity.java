@@ -32,7 +32,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
- * Peugeot 308 OEM Launcher v1.39
+ * Peugeot 308 OEM Launcher v1.42
  * - Visual "concessionária": superfícies planas, ícones vetoriais, tipografia em hierarquia
  * - Tema automático dia/noite (nascer/pôr do sol), escuro ou claro
  * - Estados de toque, escala uniforme (sem distorcer), cache de ícones, aceleração por hardware
@@ -51,7 +51,7 @@ public class MainActivity extends Activity {
     private boolean speedPreferGps = true;
     private boolean immersiveIdle = true;
     private static final long HOME_IDLE_MS = 180000L; // três minutos
-    private static final long HOME_TRANSITION_MS = 550L;
+    private static final long HOME_TRANSITION_MS = 780L; // transição de layout e dock mais suave
     private float homeIdleFraction = 0f;
     private float homeIdleTransitionFrom = 0f;
     private long homeIdleTransitionAt = SystemClock.uptimeMillis();
@@ -396,6 +396,8 @@ public class MainActivity extends Activity {
     }
     private String weatherCity = "", weatherLine = "Configure a cidade", weatherDetail = "";
     private boolean weatherAuto = false;
+    // So desenha movimento no icone do clima, sem nova consulta meteorologica.
+    private boolean weatherMotionEnabled = true;
     private double weatherAutoLat = Double.NaN, weatherAutoLon = Double.NaN;
     private long weatherAutoChecked = 0;
     private String brandTitle = "PEUGEOT 308";
@@ -679,6 +681,7 @@ public class MainActivity extends Activity {
         loadAppPersonalization(prefs);
         weatherCity = prefs.getString("city", "");
         weatherAuto = prefs.getBoolean("weather_auto", false);
+        weatherMotionEnabled = prefs.getBoolean("weather_motion", true);
         brandTitle = prefs.getString("brand_title", "PEUGEOT 308");
         minimalIcons = prefs.getBoolean("minimal_icons", true);
         lyricsOn=prefs.getBoolean("lyrics_on",false);
@@ -750,7 +753,10 @@ public class MainActivity extends Activity {
         if (!firstResume && snd != null) snd.start();
         firstResume = false;
         appliedBrightnessPct = -1; applyBrightness(); lastCandStamp = 0;
-        if (dashboard != null) dashboard.invalidate(); // ícones já estão em cache por pacote
+        if (dashboard != null) {
+            dashboard.invalidate(); // ícones já estão em cache por pacote
+            dashboard.setWeatherAnimationActive(true); // somente com a Activity em primeiro plano
+        }
         // Cobre firmwares que retomam a Activity mas não transmitem ACTION_SCREEN_ON.
         if (wifiAutoOn && wifiAutoPausedAtElapsed > 0L &&
                 SystemClock.elapsedRealtime() - wifiAutoPausedAtElapsed > 60000L) {
@@ -760,6 +766,7 @@ public class MainActivity extends Activity {
         wifiAutoPausedAtElapsed = 0L;
     }
     @Override protected void onPause() {
+        if (dashboard != null) dashboard.setWeatherAnimationActive(false);
         wifiAutoPausedAtElapsed = SystemClock.elapsedRealtime();
         if (snd == null || !snd.autoVolOn) stopGps();
         super.onPause();
@@ -2705,6 +2712,12 @@ public class MainActivity extends Activity {
                         else if (!weatherCity.isEmpty()) fetchWeather();
                     });
                     page.addView(label("No modo GPS, a previsão usa as coordenadas atuais. Consulta a cada 30 min ou ao mudar mais de 15 km; requer sinal GPS e internet.", 12, cMuted, false));
+                    switchRow(page, "Animar ícone do clima (leve)", weatherMotionEnabled, (v, enabled) -> {
+                        weatherMotionEnabled = enabled;
+                        getPreferences(0).edit().putBoolean("weather_motion", enabled).apply();
+                        if (dashboard != null) { dashboard.setWeatherAnimationActive(enabled); dashboard.invalidate(); }
+                    });
+                    page.addView(label("Sol, nuvens, chuva, neve e neblina com animação discreta; sem consultas extras à internet. Pode desligar para economizar processamento.", 12, cMuted, false));
                     page.addView(label("Condição: " + weatherCondition + "   •   " + (weatherCity.isEmpty() && !weatherAuto ? "--" : weatherLine), 15, cMuted, false));
                     page.addView(label("Cidade GPS: " + (weatherAuto ? (weatherDetail.isEmpty()?"Aguardando consulta":weatherDetail) : "Modo manual") + "  •  Fonte: Geocoder / OpenStreetMap", 12, cMuted, false));
                     LinearLayout weatherButtons = new LinearLayout(this); weatherButtons.setPadding(0, dp(18), 0, 0); page.addView(weatherButtons);
@@ -3434,6 +3447,34 @@ public class MainActivity extends Activity {
         float seekX = 642, seekW = 220;
         Canvas canvas;
 
+        // Atualização localizada: ~5 quadros/segundo so no desenho meteorologico.
+        // Nunca acorda o GPS nem consulta a rede para desenhar as particulas.
+        private static final long WEATHER_FRAME_MS = 200L;
+        private boolean weatherAnimationRunning = false;
+        private final Runnable weatherFrame = new Runnable() {
+            @Override public void run() {
+                if (!weatherAnimationRunning) return;
+                if (weatherMotionEnabled && getWidth() > 0 && getHeight() > 0
+                        && getWindowVisibility() == View.VISIBLE && isShown()) {
+                    float scale = Math.min(getWidth()/1280f, getHeight()/720f);
+                    float left = (getWidth() - 1280f*scale)/2f;
+                    float top = (getHeight() - 720f*scale)/2f;
+                    // Clima sempre na coluna x=32..362; animamos so a faixa do icone.
+                    invalidate((int)(left+32f*scale), (int)(top+341f*scale),
+                            (int)(left+331f*scale), (int)(top+488f*scale));
+                }
+                postDelayed(this, WEATHER_FRAME_MS);
+            }
+        };
+        void setWeatherAnimationActive(boolean enabled) {
+            removeCallbacks(weatherFrame);
+            weatherAnimationRunning = enabled && weatherMotionEnabled;
+            if (weatherAnimationRunning) postDelayed(weatherFrame, WEATHER_FRAME_MS);
+        }
+        @Override protected void onDetachedFromWindow() {
+            setWeatherAnimationActive(false);
+            super.onDetachedFromWindow();
+        }
         Dashboard() { super(MainActivity.this); setHapticFeedbackEnabled(true); }
         void clearIcons() { iconCache.clear(); labelCache.clear(); }
         /** Clipa o redesenho ao progresso do Spotify, sem invalidar toda a tela por segundo. */
@@ -3481,7 +3522,10 @@ public class MainActivity extends Activity {
         }
 
         // ---------- cartão OEM: superfície plana, gradiente sutil, borda quase invisível
+        boolean morphContentOnly = false;
         void card(float x, float y, float w, float h) {
+            // Durante a transição os fundos são desenhados uma única vez, com geometria interpolada.
+            if (morphContentOnly) return;
             fill(cShadow); r.set(x + 2, y + 10, x + w - 2, y + h + 8); canvas.drawRoundRect(r, 26, 26, p);
             p.reset(); p.setAntiAlias(true);
             p.setShader(new LinearGradient(x, y, x, y + h, cSurfTop, cSurfBot, Shader.TileMode.CLAMP));
@@ -3647,17 +3691,72 @@ public class MainActivity extends Activity {
             path.addRoundRect(-.74f * u, .1f * u, .9f * u, .48f * u, .2f * u, .2f * u, Path.Direction.CW);
             canvas.drawPath(path, p); canvas.restore();
         }
+        /** Ícone meteorológico animado em Canvas, sem GIF, imagens ou bibliotecas extras.
+         *  Fases dependem do relógio: não ficam acumulando timers nem objetos.
+         *  O contorno do ícone é mantido para não sobrepor temperatura ou textos.
+         */
         void weatherIcon(int code, float cx, float cy, float s) {
+            long now = weatherMotionEnabled ? SystemClock.uptimeMillis() : 0L;
+            float seconds = now / 1000f;
+            boolean animate = weatherMotionEnabled;
             int sun = 0xffFFB84D, cl = night ? 0xffC9D3DF : 0xff9AA8BA;
-            if (code == 0) { sunIcon(cx, cy, s * .8f, sun); return; }
-            if (code == 1 || code == 2) { sunIcon(cx - s * .16f, cy - s * .16f, s * .56f, sun); cloudIcon(cx + s * .08f, cy + s * .1f, s * .82f, cl); return; }
-            boolean rain = (code >= 51 && code <= 67) || (code >= 80 && code <= 82), snow = (code >= 71 && code <= 77) || code == 85 || code == 86, storm = code >= 95, fog = code >= 45 && code <= 48;
-            float shift = (rain || snow || storm || fog) ? -s * .14f : 0;
-            cloudIcon(cx, cy + shift, s, cl);
-            if (rain) { stroke(accent, Math.max(2.5f, s * .07f)); for (int i = 0; i < 3; i++) { float x = cx - s * .26f + i * s * .26f; canvas.drawLine(x, cy + s * .26f, x - s * .08f, cy + s * .46f, p); } }
-            else if (snow) { fill(cText); for (int i = 0; i < 3; i++) canvas.drawCircle(cx - s * .26f + i * s * .26f, cy + s * .38f, s * .045f, p); }
-            else if (storm) { fill(sun); float u = s / 2f; path.reset(); path.moveTo(cx + .12f * u, cy + .3f * u); path.lineTo(cx - .2f * u, cy + .78f * u); path.lineTo(cx + .02f * u, cy + .78f * u); path.lineTo(cx - .1f * u, cy + 1.14f * u); path.lineTo(cx + .3f * u, cy + .62f * u); path.lineTo(cx + .08f * u, cy + .62f * u); path.close(); canvas.drawPath(path, p); }
-            else if (fog) { stroke(cl, Math.max(2.5f, s * .06f)); canvas.drawLine(cx - s * .3f, cy + s * .3f, cx + s * .3f, cy + s * .3f, p); canvas.drawLine(cx - s * .2f, cy + s * .44f, cx + s * .2f, cy + s * .44f, p); }
+            float cloudDx = animate ? (float)Math.sin(seconds*.75f)*s*.045f : 0f;
+            float cloudDy = animate ? (float)Math.sin(seconds*.93f)*s*.017f : 0f;
+            float pulse = animate ? 1f + .025f*(float)Math.sin(seconds*1.4f) : 1f;
+            if (code == 0) {
+                canvas.save();
+                if (animate) canvas.rotate((seconds*4f)%360f,cx,cy);
+                sunIcon(cx,cy,s*.8f*pulse,sun);
+                canvas.restore();
+                return;
+            }
+            if (code == 1 || code == 2) {
+                float sx = cx-s*.16f, sy = cy-s*.16f;
+                canvas.save();
+                if (animate) canvas.rotate((seconds*3f)%360f,sx,sy);
+                sunIcon(sx,sy,s*.56f*pulse,sun);
+                canvas.restore();
+                cloudIcon(cx+s*.08f+cloudDx, cy+s*.1f+cloudDy, s*.82f,cl);
+                return;
+            }
+            boolean rain = (code >= 51 && code <= 67) || (code >= 80 && code <= 82);
+            boolean snow = (code >= 71 && code <= 77) || code == 85 || code == 86;
+            boolean storm = code >= 95, fog = code >= 45 && code <= 48;
+            float shift = (rain || snow || storm || fog) ? -s*.14f : 0f;
+            cloudIcon(cx+cloudDx,cy+shift+cloudDy,s,cl);
+            if (rain || storm) {
+                stroke(accent,Math.max(2.5f,s*.064f));
+                for (int i=0;i<3;i++) {
+                    float phase = animate ? WeatherMotion.progress(now, 1050L, i, 3) : .45f;
+                    float x=cx-s*.26f+i*s*.26f;
+                    float y=cy+s*(.26f+.21f*phase);
+                    canvas.drawLine(x,y,x-s*.065f,y+s*.10f,p);
+                }
+            }
+            if (snow) {
+                fill(cText);
+                for (int i=0;i<4;i++) {
+                    float phase = animate ? WeatherMotion.progress(now, 2200L, i, 4) : .55f;
+                    float sway=animate ? (float)Math.sin(seconds*1.6f+i*1.7f)*s*.045f : 0f;
+                    float x=cx-s*.32f+(i%4)*s*.20f+sway;
+                    float y=cy+s*(.25f+.28f*phase);
+                    canvas.drawCircle(x,y,s*.035f,p);
+                }
+            }
+            if (storm) {
+                int flash=animate && ((now/800L)%5L==0L) ? 0xffFFF1B5 : sun;
+                fill(flash);
+                float u=s/2f;
+                path.reset();path.moveTo(cx+.12f*u,cy+.30f*u);
+                path.lineTo(cx-.20f*u,cy+.78f*u);path.lineTo(cx+.02f*u,cy+.78f*u);
+                path.lineTo(cx-.10f*u,cy+1.14f*u);path.lineTo(cx+.30f*u,cy+.62f*u);
+                path.lineTo(cx+.08f*u,cy+.62f*u);path.close();canvas.drawPath(path,p);
+            } else if (fog) {
+                stroke(cl,Math.max(2.5f,s*.06f));
+                float dx=animate ? (float)Math.sin(seconds*.9f)*s*.06f : 0f;
+                canvas.drawLine(cx-s*.30f+dx,cy+s*.30f,cx+s*.30f+dx,cy+s*.30f,p);
+                canvas.drawLine(cx-s*.20f-dx,cy+s*.44f,cx+s*.20f-dx,cy+s*.44f,p);
+            }
         }
 
         // ---------- componentes
@@ -3689,12 +3788,15 @@ public class MainActivity extends Activity {
             if (!unit.isEmpty()) t(unit, x0 + wv + 5, base, 16, cDim, tfReg);
         }
 
-        // ---------- telas com transição suave para modo recolhido
+        // ---------- transição do rodapé: cards crescem sem imagens-fantasma,
+        // enquanto os atalhos deslizam para baixo com leve fade.
+        float homeBlend(float v) { return Math.max(0f, Math.min(1f, v)); }
+        float homeSmooth(float v) { v = homeBlend(v); return v * v * (3f - 2f * v); }
+        float homeLerp(float a, float b, float fraction) { return a + (b - a) * fraction; }
         void drawStandardHome() {
             drawClockWeather();
             if (vehicleMenuEnabled) { drawMedia(386, 508, false); drawVehicle(); }
             else drawMedia(386, 862, true, false);
-            drawDock();
         }
         void drawIdleHome() {
             final float left = 32f, right = 1248f, gap = 20f;
@@ -3708,15 +3810,42 @@ public class MainActivity extends Activity {
                 drawVehicleIdle(vehicleLeft, vehicleW, panelH);
             } else drawMediaIdle(mediaLeft, right - mediaLeft, panelH);
         }
+        void drawHomeMorphCards(float f) {
+            float height = homeLerp(456f, 592f, f);
+            card(32f, 96f, 330f, height);
+            card(homeLerp(386f, 382f, f), 96f,
+                    homeLerp(vehicleMenuEnabled ? 508f : 862f,
+                             vehicleMenuEnabled ? 516f : 866f, f), height);
+            if (vehicleMenuEnabled) card(918f, 96f, 330f, height);
+        }
         void drawHomeLayer(boolean idle, float opacity, boolean interactive) {
             if (opacity <= 0.001f) return;
             int count = canvas.saveLayerAlpha(0, 74, 1280, 720,
                     Math.max(0, Math.min(255, Math.round(255 * opacity))));
-            boolean previous = noHit;
+            boolean previousHit = noHit;
             noHit = !interactive;
-            if (idle) drawIdleHome(); else drawStandardHome();
-            noHit = previous;
-            canvas.restoreToCount(count);
+            morphContentOnly = true;
+            try {
+                if (idle) drawIdleHome(); else drawStandardHome();
+            } finally {
+                morphContentOnly = false;
+                noHit = previousHit;
+                canvas.restoreToCount(count);
+            }
+        }
+        void drawAnimatedDock(float f) {
+            // Não deixa atalhos invisíveis capturarem toques após recolher.
+            float visible = 1f - homeSmooth(f / .72f);
+            if (visible < .003f) return;
+            int count = canvas.saveLayerAlpha(0f, 550f, 1280f, 720f,
+                    Math.round(255f * visible));
+            canvas.translate(0f, 122f * homeSmooth(f));
+            boolean prior = noHit;
+            noHit = f > .08f;
+            try { drawDock(); } finally {
+                noHit = prior;
+                canvas.restoreToCount(count);
+            }
         }
         @Override protected void onDraw(Canvas c) {
             super.onDraw(c); canvas = c; hits.clear();
@@ -3735,18 +3864,29 @@ public class MainActivity extends Activity {
                 homeIdleTransitionFrom = homeIdleFraction;
                 homeIdleTransitionAt = now;
             }
-            float progress = Math.min(1f, Math.max(0f, now - homeIdleTransitionAt) / (float) HOME_TRANSITION_MS);
-            float ease = progress * progress * (3f - 2f * progress); // animação suave sem salto no primeiro frame
+            float progress = homeBlend((now - homeIdleTransitionAt) / (float) HOME_TRANSITION_MS);
+            // Ease-in-out cúbico: início e fim suaves, sem salto na reversão.
+            float ease = progress < .5f ? 4f * progress * progress * progress
+                    : 1f - (float) Math.pow(-2f * progress + 2f, 3f) / 2f;
             homeIdleFraction = homeIdleTransitionFrom + ((idleTarget ? 1f : 0f) - homeIdleTransitionFrom) * ease;
-            // A composição muda gradualmente; apenas a camada predominante recebe toques.
-            if (homeIdleFraction >= .5f) {
-                drawHomeLayer(false, 1f - homeIdleFraction, false);
-                drawHomeLayer(true, homeIdleFraction, true);
+            float f = homeBlend(homeIdleFraction);
+            if (progress >= 1f && f < .001f) {
+                // Estado normal: desenha diretamente, sem buffers/efeitos desnecessários.
+                drawStandardHome();
+                drawDock();
+            } else if (progress >= 1f && f > .999f) {
+                // Estado recolhido: também sem camadas intermediárias (melhor no RK3326).
+                drawIdleHome();
             } else {
-                drawHomeLayer(true, homeIdleFraction, false);
-                drawHomeLayer(false, 1f - homeIdleFraction, true);
+                // Apenas durante os 780 ms: interpola os cartões sem duplicar seus fundos.
+                drawHomeMorphCards(f);
+                float idleOpacity = homeSmooth((f - .20f) / .60f);
+                float normalOpacity = 1f - idleOpacity;
+                if (normalOpacity > .001f) drawHomeLayer(false, normalOpacity, f < .5f);
+                if (idleOpacity > .001f) drawHomeLayer(true, idleOpacity, f >= .5f);
+                drawAnimatedDock(f);
             }
-            if (homeIdleFraction > 0.001f && homeIdleFraction < .999f) postInvalidateOnAnimation();
+            if (progress < 1f) postInvalidateOnAnimation();
             drawVolume(); drawAlertPopup(); // alertas urgentes à frente do indicador de mudo
             c.restore();
         }
@@ -3952,12 +4092,25 @@ public class MainActivity extends Activity {
             hit(25,barX,barY-13,barW,34);
             t(songDuration>0?timeString(pos):"--:--",barX,barY+37,15,cDim,tfReg);
             tr(songDuration>0?timeString(songDuration):"--:--",barX+barW,barY+37,15,cDim,tfReg);
+            // Modo recolhido com 3 cards: repetir o conjunto centralizado
+            // em faixa inferior; os botoes nao ficam perdidos na area direita.
             float buttonY=y+502;
-            MediaControlsLayout controls=MediaControlsLayout.forWidth(w,compact,true);
-            float sep=controls.separation;
-            roundBtn(20,cx-sep,buttonY,controls.sideRadius,I_PREV,controls.sideRadius*.76f,cSurf2,cText);
-            roundBtn(21,cx,buttonY,controls.playRadius,mediaPlaying?I_PAUSE:I_PLAY,controls.playRadius*.78f,accent,onAccent);
-            roundBtn(22,cx+sep,buttonY,controls.sideRadius,I_NEXT,controls.sideRadius*.76f,cSurf2,cText);
+            if (vehicleMenuEnabled && w<600f) {
+                float rackX=x+24f,rackY=y+444f,rackW=w-48f,rackH=120f;
+                rr(rackX,rackY,rackW,rackH,21,mix(cSurfTop,cSurf2,.64f));
+                rrs(rackX,rackY,rackW,rackH,21,cHair,1.0f);
+                MediaControlsLayout controls=MediaControlsLayout.forFooter(rackX+22f,rackX+rackW-22f,true);
+                float center=controls.centerX;
+                roundBtn(20,center-controls.separation,buttonY,controls.sideRadius,I_PREV,controls.sideRadius*.76f,cSurf2,cText);
+                roundBtn(21,center,buttonY,controls.playRadius,mediaPlaying?I_PAUSE:I_PLAY,controls.playRadius*.78f,accent,onAccent);
+                roundBtn(22,center+controls.separation,buttonY,controls.sideRadius,I_NEXT,controls.sideRadius*.76f,cSurf2,cText);
+            } else {
+                MediaControlsLayout controls=MediaControlsLayout.forWidth(w,compact,true);
+                float sep=controls.separation;
+                roundBtn(20,cx-sep,buttonY,controls.sideRadius,I_PREV,controls.sideRadius*.76f,cSurf2,cText);
+                roundBtn(21,cx,buttonY,controls.playRadius,mediaPlaying?I_PAUSE:I_PLAY,controls.playRadius*.78f,accent,onAccent);
+                roundBtn(22,cx+sep,buttonY,controls.sideRadius,I_NEXT,controls.sideRadius*.76f,cSurf2,cText);
+            }
         }
 
         void drawVehicleIdle(float x,float w,float h) {
@@ -4085,12 +4238,27 @@ public class MainActivity extends Activity {
             tr(songDuration > 0 ? timeString(songDuration) : "--:--", tx + tw, ty, wide ? 17 : 16, cDim, tfReg);
             seekX = tx; seekW = tw;
             hit(25, tx - 6, by - 18, tw + 12, 44);
-            // Distribuição conforme o espaço REAL: em 3 cards, usa toda a largura do Spotify.
-            float cxc=x+w/2f, cyc=wide?474:475;
-            MediaControlsLayout controls=MediaControlsLayout.forWidth(w,!wide,false);
-            roundBtn(20,cxc-controls.separation,cyc,controls.sideRadius,I_PREV,controls.sideRadius*.72f,cSurf2,cText);
-            roundBtn(21,cxc,cyc,controls.playRadius,mediaPlaying?I_PAUSE:I_PLAY,controls.playRadius*.76f,accent,onAccent);
-            roundBtn(22,cxc+controls.separation,cyc,controls.sideRadius,I_NEXT,controls.sideRadius*.72f,cSurf2,cText);
+            // Com 3 cards, a coluna do titulo e estreita. Uma faixa de controles
+            // ocupa TODA a largura LIVRE abaixo da capa e do botao Letras;
+            // os botoes ficam grandes, proximos e simetricos, sem flutuar a direita.
+            // Com 2 cards, preserva a disposicao aprovada ao lado da capa.
+            if (!wide) {
+                float rackX=x+24f, rackY=y+309f, rackW=w-48f, rackH=114f;
+                rr(rackX,rackY,rackW,rackH,21,mix(cSurfTop,cSurf2,.64f));
+                rrs(rackX,rackY,rackW,rackH,21,cHair,1.0f);
+                MediaControlsLayout controls=MediaControlsLayout.forFooter(rackX+22f,rackX+rackW-22f,false);
+                float cx=controls.centerX, cy=y+366f;
+                roundBtn(20,cx-controls.separation,cy,controls.sideRadius,I_PREV,controls.sideRadius*.78f,cSurf2,cText);
+                roundBtn(21,cx,cy,controls.playRadius,mediaPlaying?I_PAUSE:I_PLAY,controls.playRadius*.78f,accent,onAccent);
+                roundBtn(22,cx+controls.separation,cy,controls.sideRadius,I_NEXT,controls.sideRadius*.78f,cSurf2,cText);
+            } else {
+                float cy=y+378f;
+                MediaControlsLayout controls=MediaControlsLayout.forRegion(tx,x+w-26f,false,false);
+                float cx=controls.centerX;
+                roundBtn(20,cx-controls.separation,cy,controls.sideRadius,I_PREV,controls.sideRadius*.72f,cSurf2,cText);
+                roundBtn(21,cx,cy,controls.playRadius,mediaPlaying?I_PAUSE:I_PLAY,controls.playRadius*.76f,accent,onAccent);
+                roundBtn(22,cx+controls.separation,cy,controls.sideRadius,I_NEXT,controls.sideRadius*.72f,cSurf2,cText);
+            }
             // Letras discretas centralizadas logo abaixo da capa, longe do título e dos controles.
             float lw=wide ? art : art - 32, lh=wide ? 31 : 27;
             float lx=ax+(art-lw)/2f, ly=ay+art+(wide?12:5);
