@@ -59,11 +59,6 @@ public class MainActivity extends Activity {
     private long lastHomeInteraction = SystemClock.uptimeMillis();
     private String lyricsCacheKey = "", lyricsCacheText = "", lyricsCacheSync = "";
     private boolean lyricsLoading = false;
-    private String radarError = "Ainda não consultado";
-    private String radarLastDetail = "Aguardando primeira consulta";
-    private long radarLastAlertAt = 0;
-    private long radarLastSuccessfulAt = 0;
-    private int radarCount = 0;
     private Bitmap albumArt;
     // Cache privado e pequeno: apenas a última capa do Spotify, sem download de imagens.
     private Bitmap lastSpotifyArt;
@@ -163,36 +158,18 @@ public class MainActivity extends Activity {
     private Dialog eqDialog;
     private final int[] topSlot = {0, 4, 9}; // mini cards do topo: id do indicador (-1 = vazio)
     // Visibilidade dos atalhos da barra superior (não altera o estado real de Wi-Fi/BT).
-    private boolean topBtVisible = true, topWifiVisible = true, topRadarVisible = true;
+    private boolean topBtVisible = true, topWifiVisible = true;
     private boolean topPcVisible = true, topEqVisible = true, topVolumeVisible = true;
     private boolean topCustomVisible = false;
     private String topCustomPackage = "";
     private String audioStatus = "Ainda não testado";
-    private boolean alertSound = true, radarEnabled = false, overNow = false;
+    private boolean alertSound = true, overNow = false;
     private long lastOverAlert = 0;
     private String alertTitle = "", alertSub = "";
     private int alertKind = 0;
     private long alertUntil = 0, alertStart = 0;
     private ToneGenerator alertTone;
-    // Radar 1.32: base local pessoal CSV/ZIP + pontos OSM, sem extração automática do MapaRadar.
-    private final RadarStore radarStore = new RadarStore();
-    private static final int REQ_RADAR_FILE = 1320;
-    private int radarTypesMask = RadarStore.ALL;
-    private boolean radarVisual = true, radarAudio = true;
-    private long radarImportAt = 0;
-    private String radarImportName = "Nenhuma base pessoal";
-    private String radarImportStatus = "Nenhum arquivo importado";
-    private boolean radarFileLoading = false;
-    private Dialog quickDialog;
-    private double radarFetchLat = 999, radarFetchLon = 999, gpsLat = Double.NaN, gpsLon = Double.NaN;
-    private long radarFetchAt = 0;
-    private boolean radarFetching = false;
-    private final HashMap<Long, Long> radarAlerted = new HashMap<>();
-    private RadarStore.Point activeRadar;
-    private double activeRadarPreviousDistance = Double.MAX_VALUE;
-    private int activeRadarIncreasing = 0;
-    private long activeRadarBeepAt=0, activeRadarMutedUntil=0;
-    private boolean radarMergeImport=false;
+    private double gpsLat = Double.NaN, gpsLon = Double.NaN;
 
     private static final long SHINE_PERIOD = 3200L, SHINE_MS = 850L;
     private static final long SPEED_ALERT_DURATION_MS = 7000L; // v1.33: 4 s antigos + 3 s solicitados
@@ -344,7 +321,7 @@ public class MainActivity extends Activity {
         @Override public void onProviderEnabled(String provider) {}
         @Override public void onProviderDisabled(String provider) {}
     };
-    private boolean needGps() { return weatherAuto || vehicleMenuEnabled || topWidgetEnabled || drivingEnabled || radarEnabled || speedAlert || speedPreferGps || (snd != null && snd.autoVolOn); }
+    private boolean needGps() { return weatherAuto || vehicleMenuEnabled || topWidgetEnabled || drivingEnabled || speedAlert || speedPreferGps || (snd != null && snd.autoVolOn); }
     private boolean gpsFresh() { return gpsLastFix > 0 && SystemClock.elapsedRealtime() - gpsLastFix < 6000; }
     private void startGps() {
         if (gpsRunning || !needGps()) return;
@@ -635,12 +612,6 @@ public class MainActivity extends Activity {
         int[] defSlots = {0, 4, 9};
         for (int i = 0; i < topSlot.length; i++) topSlot[i] = Math.max(-1, Math.min(vehicleNames.length - 1, prefs.getInt("top_slot_" + i, defSlots[i])));
         alertSound = prefs.getBoolean("alert_sound", true);
-        radarEnabled = prefs.getBoolean("radar_alert", false);
-        radarTypesMask = prefs.getInt("radar_types", RadarStore.ALL) & RadarStore.ALL;
-        radarVisual = prefs.getBoolean("radar_visual", true);
-        radarAudio = prefs.getBoolean("radar_audio", true);
-        radarImportAt = prefs.getLong("radar_import_at", 0L);
-        radarImportName = prefs.getString("radar_import_name", "Nenhuma base pessoal");
         vehicleAction = prefs.getString("vehicle_action", DEFAULT_VEHICLE_ACTION);
         for (int i = 0; i < 3; i++) { vbtnLabel[i] = prefs.getString("vbtn_label_" + i, vbtnLabel[i]); vbtnCmd[i] = prefs.getString("vbtn_cmd_" + i, vbtnCmd[i]); }
         homeAddr = prefs.getString("home_addr", ""); workAddr = prefs.getString("work_addr", "");
@@ -668,7 +639,6 @@ public class MainActivity extends Activity {
         topBrightnessVisible = prefs.getBoolean("top_show_brightness", false);
         wifiAutoOn = prefs.getBoolean("wifi_auto_on", false);
         wifiAutoStatus = prefs.getString("wifi_auto_status", "Ainda não testado");
-        topRadarVisible = prefs.getBoolean("top_show_radar", true);
         topPcVisible = prefs.getBoolean("top_show_pc", true);
         topEqVisible = prefs.getBoolean("top_show_eq", true);
         topVolumeVisible = prefs.getBoolean("top_show_volume", true);
@@ -731,27 +701,6 @@ public class MainActivity extends Activity {
         registerScreenReceiver();
         // Em algumas centrais o estado Wi-Fi só estabiliza depois de acordar a MCU.
         // Uma tentativa por inicialização; sem polling nem serviço residente.
-        new Thread(() -> {
-            try {
-                // Base embutida é independente da base pessoal e não é sobrescrita por importações.
-                try(InputStream asset=getAssets().open("tracksource_7ways.zip");
-                    java.util.zip.ZipInputStream zip=new java.util.zip.ZipInputStream(new BufferedInputStream(asset))){
-                    ArrayList<RadarStore.Point> bundled=new ArrayList<>();java.util.zip.ZipEntry entry;
-                    while((entry=zip.getNextEntry())!=null){
-                        if(entry.isDirectory()||!entry.getName().toLowerCase(Locale.ROOT).endsWith(".txt"))continue;
-                        ByteArrayOutputStream buf=new ByteArrayOutputStream();byte[] b=new byte[8192];int n;
-                        while((n=zip.read(b))>0){if(buf.size()+n>9000000)throw new IOException("Lista grande demais");buf.write(b,0,n);}
-                        RadarStore.ParseResult parsed=RadarStore.parseAuto(new InputStreamReader(new ByteArrayInputStream(buf.toByteArray()),"UTF-8"),entry.getName(),200000);
-                        bundled.addAll(parsed.points);zip.closeEntry();
-                    }
-                    radarStore.setBundled(RadarStore.dedupe(bundled));
-                }catch(Exception e){android.util.Log.w("PugRadar","Base Tracksource indisponível",e);}
-                radarStore.load(new File(getFilesDir(), "radar_personal.dat"));
-                handler.post(() -> { radarImportStatus = radarStore.personalCount()+" pontos carregados"; if (dashboard!=null)dashboard.invalidate(); });
-            } catch (Exception error) {
-                handler.post(() -> radarImportStatus = "Falha ao ler base local: " + error.getMessage());
-            }
-        }, "PugRadarLoad").start();
         if (wifiAutoOn) handler.postDelayed(() -> tryAutoEnableWifi(false), 1800L);
         handler.post(shineTick);
         if (!bootArmed) { bootArmed = true; if (SystemClock.elapsedRealtime() < 6 * 60 * 1000L) armStartupFade(); } // ligou o carro (boot recente)
@@ -834,7 +783,7 @@ public class MainActivity extends Activity {
         }
     };
 
-    // ---- Alertas: limite de velocidade e radar (popup + som opcional) ----
+    // ---- Alertas de velocidade (popup + som opcional) ----
     private void showAlert(int kind, String title, String sub, long ms, boolean sound) {
         alertKind = kind; alertTitle = title; alertSub = sub; alertStart = SystemClock.uptimeMillis(); alertUntil = alertStart + ms;
         if (sound && alertSound) alertBeep();
@@ -845,7 +794,7 @@ public class MainActivity extends Activity {
         }, ms + 80);
     }
     private void alertBeep() {
-        try { if (alertTone == null) alertTone = new ToneGenerator(AudioManager.STREAM_MUSIC, 90); alertTone.startTone(alertKind == 0 ? ToneGenerator.TONE_PROP_BEEP2 : ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, alertKind == 0 ? 600 : 350); } catch (Exception ignored) {}
+        try { if (alertTone == null) alertTone = new ToneGenerator(AudioManager.STREAM_MUSIC, 90); alertTone.startTone(ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, 350); } catch (Exception ignored) {}
     }
     private static double haversine(double la1, double lo1, double la2, double lo2) {
         double dLa = Math.toRadians(la2 - la1), dLo = Math.toRadians(lo2 - lo1);
@@ -872,251 +821,9 @@ public class MainActivity extends Activity {
                 }
             } else if (v <= speedLimit - 2) overNow = false;
         } else overNow = false;
-        if (!radarEnabled || radarTypesMask==0 || !gpsFresh() || Double.isNaN(gpsLat)) {
-            clearActiveRadar();return;
-        }
-        boolean stale = radarFetchAt == 0 || nowEl - radarFetchAt > 1200000 || haversine(gpsLat, gpsLon, radarFetchLat, radarFetchLon) > 3500;
-        if (netOnline && !radarFetching && stale && (radarFetchAt == 0 || nowEl - radarFetchAt > 120000)) fetchRadars(gpsLat, gpsLon);
-        if (!radarVisual && !radarAudio) {clearActiveRadar();return;}
-        // A velocidade e o rumo do GPS são usados para direção; não bloquear com velocidade CAN ausente.
-        float gpsV=gpsFresh()?gpsSpeedKmh:v;
-        if (gpsAccuracy > 100 || gpsV < 5 || gpsBearing < 0) {clearActiveRadar();return;}
-        double reach = Math.max(300,Math.min(700,gpsV/3.6*13));
-        if(activeRadar!=null){
-            double dist=haversine(gpsLat,gpsLon,activeRadar.lat,activeRadar.lon);
-            double bearingDiff=Math.abs(((bearingTo(gpsLat,gpsLon,activeRadar.lat,activeRadar.lon)-gpsBearing+540)%360)-180);
-            // Uma pequena margem depois de ultrapassar a posição protege contra ruído do GPS.
-            if(dist>activeRadarPreviousDistance+6 && dist<150)activeRadarIncreasing++;
-            else if(dist<activeRadarPreviousDistance-3)activeRadarIncreasing=0;
-            activeRadarPreviousDistance=dist;
-            if(activeRadarIncreasing>=2 || (dist>90 && bearingDiff>110) || dist>reach+100){
-                radarAlerted.put(activeRadar.id,nowEl);clearActiveRadar();
-            }
-        }
-        if(activeRadar==null){
-            double best=Double.MAX_VALUE;RadarStore.Point match=null;
-            for(RadarStore.Point point:radarStore.nearby(gpsLat,gpsLon,reach,radarTypesMask)){
-                double d=haversine(gpsLat,gpsLon,point.lat,point.lon);
-                if(d>reach||d>=best)continue;
-                double bearingDiff=Math.abs(((bearingTo(gpsLat,gpsLon,point.lat,point.lon)-gpsBearing+540)%360)-180);
-                if(bearingDiff>55)continue;
-                if(point.dirType!=0){
-                    double headingDiff=Math.abs(((point.heading-gpsBearing+540)%360)-180);
-                    // DirType=2: os dois sentidos opostos; DirType=1: somente o rumo indicado.
-                    if(point.dirType==2)headingDiff=Math.min(headingDiff,Math.abs(180-headingDiff));
-                    if(headingDiff>65)continue;
-                }
-                Long last=radarAlerted.get(point.id);
-                if(last!=null&&nowEl-last<120000)continue;
-                best=d;match=point;
-            }
-            if(match!=null){activeRadar=match;activeRadarPreviousDistance=best;activeRadarIncreasing=0;activeRadarBeepAt=0;}
-        }
-        if(activeRadar==null)return;
-        double dist=haversine(gpsLat,gpsLon,activeRadar.lat,activeRadar.lon);
-        String label=activeRadar.type==RadarStore.MOVEL?"POSSÍVEL RADAR MÓVEL":RadarStore.LABELS[activeRadar.type].toUpperCase(new Locale("pt","BR"));
-        String sub=(Math.max(0,Math.round(dist/10)*10))+" m"+
-                (activeRadar.limit>0&&activeRadar.type<=RadarStore.SEMAFORO_RADAR?" • limite "+activeRadar.limit+" km/h":"");
-        // Não dispara novo popup temporizado: o painel acompanha cada leitura do GPS.
-        if(radarVisual && SystemClock.uptimeMillis() >= activeRadarMutedUntil){
-            alertKind=0;alertTitle=label;alertSub=sub;alertStart=SystemClock.uptimeMillis()-300;
-            alertUntil=SystemClock.uptimeMillis()+1800;
-            if(dashboard!=null)dashboard.invalidate();
-        }
-        if(radarAudio && alertSound){
-            long cadence=dist<50?350:dist<100?600:dist<200?1000:dist<300?1700:3000;
-            if(nowEl-activeRadarBeepAt>=cadence){alertKind=0;alertBeep();activeRadarBeepAt=nowEl;}
-        }
-        radarLastAlertAt=nowEl;
-        if(radarAlerted.size()>3000)radarAlerted.clear();
-    }
-    private void clearActiveRadar(){
-        activeRadar=null;activeRadarPreviousDistance=Double.MAX_VALUE;activeRadarIncreasing=0;
-        if(alertKind==0)alertUntil=0;
-    }
-    /** Consulta OSM: pontos FIXOS, lombadas, praças de pedágio e alguns sinais.
-     *  "Radar móvel" só é disponível como ponto histórico na base pessoal importada. */
-    private void fetchRadars(final double lat, final double lon) {
-        radarFetching=true; radarFetchAt=SystemClock.elapsedRealtime();
-        new Thread(() -> {
-            try {
-                String q="[out:json][timeout:20];(node(around:7000,"+lat+","+lon+")[\"highway\"=\"speed_camera\"];"
-                   +"node(around:7000,"+lat+","+lon+")[\"enforcement\"=\"maxspeed\"];"
-                   +"node(around:7000,"+lat+","+lon+")[\"traffic_calming\"~\"^(bump|hump|table)$\"];"
-                   +"node(around:7000,"+lat+","+lon+")[\"barrier\"=\"toll_booth\"];"
-                   +"node(around:7000,"+lat+","+lon+")[\"highway\"=\"toll_gantry\"];);out;";
-                JSONArray items=null;Exception failed=null;
-                String[] mirrors={"https://overpass-api.de/api/interpreter?data=", "https://overpass.kumi.systems/api/interpreter?data="};
-                for(String endpoint:mirrors){
-                    try{items=readJson(endpoint+URLEncoder.encode(q,"UTF-8")).getJSONArray("elements");break;}
-                    catch(Exception error){failed=error;}
-                }
-                if(items==null)throw failed==null?new IOException("Sem dados Overpass"):failed;
-                ArrayList<RadarStore.Point> list=new ArrayList<>();
-                for(int i=0;i<items.length();i++){
-                    JSONObject node=items.optJSONObject(i);if(node==null||!node.has("lat")||!node.has("lon"))continue;
-                    JSONObject tags=node.optJSONObject("tags");if(tags==null)continue;
-                    int kind=RadarStore.FIXO;
-                    if(tags.has("traffic_calming"))kind=RadarStore.LOMBADA;
-                    else if(tags.has("barrier")||"toll_gantry".equals(tags.optString("highway")))kind=RadarStore.PEDAGIO;
-                    int limit=0;try{limit=Integer.parseInt(tags.optString("maxspeed","").replaceAll("[^0-9]",""));}catch(Exception ignored){}
-                    if(limit>200)limit=0;
-                    list.add(new RadarStore.Point(node.getDouble("lat"),node.getDouble("lon"),limit,kind,node.optLong("id",i),false));
-                }
-                handler.post(() -> {
-                    radarStore.setOnline(list);radarCount=list.size();
-                    radarError="Consulta OSM concluída";
-                    radarLastDetail=list.size()+" pontos OSM em 7 km; mobile depende da importação pessoal";
-                    radarLastSuccessfulAt=SystemClock.elapsedRealtime();
-                    radarFetchLat=lat;radarFetchLon=lon;radarFetching=false;
-                });
-            }catch(Exception error){
-                String msg=error.getClass().getSimpleName()+": "+(error.getMessage()==null?"indisponível":error.getMessage());
-                handler.post(() -> {radarError="Falha online; base pessoal permanece disponível";radarLastDetail=msg;radarFetching=false;});
-            }
-        },"PugRadarOSM").start();
     }
 
-    /** Estado efetivo da base: nunca confundir pontos OSM próximos com uma base offline nacional. */
-    private String radarOfflineSummary() {
-        int count = radarStore.personalCount();
-        if (count <= 0) return "NENHUMA BASE OFFLINE IMPORTADA";
-        return "BASE OFFLINE PRONTA • " + String.format(Locale.getDefault(), "%,d", count) + " pontos";
-    }
-    private String radarImportedDate() {
-        if (radarStore.personalCount() == 0 || radarImportAt <= 0) return "Nunca importada";
-        return new SimpleDateFormat("dd/MM/yyyy 'às' HH:mm", new Locale("pt", "BR")).format(new Date(radarImportAt));
-    }
-    private String radarIssueHint() {
-        if (!radarEnabled) return "Alertas desligados no interruptor principal.";
-        if (radarTypesMask == 0) return "Nenhuma categoria de radar selecionada.";
-        if (!radarAudio && !radarVisual) return "Som e aviso visual estão desligados.";
-        if (!gpsFresh()) return "Aguardando posição GPS recente.";
-        if (gpsAccuracy > 150) return "Sinal GPS pouco preciso para avisar.";
-        if (speedNow() < 9 || gpsBearing < 0) return "O veículo precisa estar em movimento para confirmar direção.";
-        if (radarStore.personalCount() == 0 && radarCount == 0) return "Sem pontos de alerta carregados: importe uma base CSV/ZIP ou consulte OSM.";
-        return "Aguardando aproximação de um ponto cadastrado à frente na rota.";
-    }
 
-    private String radarSelectedTypes(){
-        StringBuilder txt=new StringBuilder();
-        for(int i=0;i<RadarStore.COUNT;i++)if((radarTypesMask&(1<<i))!=0){
-            if(txt.length()>0)txt.append(", ");txt.append(RadarStore.LABELS[i]);
-        }
-        return txt.length()==0?"Nenhum":txt.toString();
-    }
-    private void enableRadar(boolean enabled){
-        radarEnabled=enabled;getPreferences(0).edit().putBoolean("radar_alert",enabled).apply();
-        if(enabled){radarFetchAt=0;radarError="GPS ativo; verificando pontos locais";}
-        else {clearActiveRadar();radarStore.setOnline(Collections.emptyList());radarCount=0;radarFetchAt=0;radarError="Desligado";}
-        refreshGpsNeed();if(dashboard!=null)dashboard.invalidate();
-    }
-    private void saveRadarTypes(){
-        getPreferences(0).edit().putInt("radar_types",radarTypesMask).apply();
-        radarAlerted.clear();clearActiveRadar();
-    }
-    private void simulateRadarAlert(){simulateRadarAlertType(RadarStore.FIXO);}
-    private void simulateRadarAlertType(int type){
-        if(activeDialog!=null&&activeDialog.isShowing())activeDialog.dismiss();
-        String name=type==RadarStore.MOVEL?"POSSÍVEL RADAR MÓVEL":RadarStore.LABELS[type].toUpperCase(new Locale("pt","BR"));
-        if(radarVisual)showAlert(0,name,"SIMULAÇÃO • sem ponto real",4500,false);
-        if(radarAudio){alertKind=0;alertBeep();if(!radarVisual)snack("Teste sonoro do radar");}
-        if(!radarVisual&&!radarAudio)snack("Ative aviso visual ou sonoro para testar");
-    }
-    private void chooseRadarFile(){
-        if(!radarFileLoading){
-            new AlertDialog.Builder(this).setTitle("Importar base offline")
-                .setMessage("Adicionar pontos à base pessoal ou substituir os pontos pessoais? A base Tracksource integrada será preservada.")
-                .setPositiveButton("Adicionar",(d,w)->{radarMergeImport=true;openRadarPicker();})
-                .setNegativeButton("Substituir",(d,w)->{radarMergeImport=false;openRadarPicker();})
-                .setNeutralButton("Cancelar",null).show();
-        }
-    }
-    private void openRadarPicker(){
-        if(radarFileLoading){snack("Importação em andamento");return;}
-        dismissQuick();
-        Intent intent=new Intent(Intent.ACTION_OPEN_DOCUMENT);
-        intent.addCategory(Intent.CATEGORY_OPENABLE);
-        intent.setType("*/*");
-        try{startActivityForResult(intent,REQ_RADAR_FILE);}
-        catch(Exception error){snack("Selecione CSV/ZIP no gerenciador de arquivos da Jancar");}
-    }
-    @Override protected void onActivityResult(int req,int code,Intent data){
-        super.onActivityResult(req,code,data);
-        if(req==REQ_RADAR_FILE&&code==RESULT_OK&&data!=null&&data.getData()!=null){
-            importRadarFile(data.getData());
-        }
-    }
-    private String radarFileName(Uri uri){
-        String name="radares.csv";
-        try(android.database.Cursor c=getContentResolver().query(uri,null,null,null,null)){
-            if(c!=null&&c.moveToFirst()){
-                int col=c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME);
-                if(col>=0)name=c.getString(col);
-            }
-        }catch(Exception ignored){}
-        return name==null||name.isEmpty()?"radares.csv":name;
-    }
-    private void importRadarFile(Uri uri){
-        if(radarFileLoading)return;
-        radarFileLoading=true;
-        String filename=radarFileName(uri);
-        radarImportStatus="Importando "+filename;
-        new Thread(() -> {
-            try{
-                ArrayList<RadarStore.Point> points=new ArrayList<>();int ignored=0;
-                try(InputStream raw=getContentResolver().openInputStream(uri)){
-                    if(raw==null)throw new IOException("Arquivo não pode ser aberto");
-                    BufferedInputStream in=new BufferedInputStream(raw);
-                    in.mark(8);int a=in.read(),b=in.read();in.reset();
-                    boolean zip=(a=='P'&&b=='K');
-                    if(zip){
-                        try(java.util.zip.ZipInputStream z=new java.util.zip.ZipInputStream(in)){
-                            java.util.zip.ZipEntry e;int files=0;
-                            while((e=z.getNextEntry())!=null){
-                                if(e.isDirectory())continue;
-                                String inner = e.getName().toLowerCase(Locale.ROOT);
-                                if(!inner.endsWith(".csv") && !inner.endsWith(".txt"))continue;
-                                if(++files>80)throw new IOException("Arquivo ZIP com mais de 80 listas");
-                                // Não fechar ZipInputStream após cada item.
-                                ByteArrayOutputStream buffer=new ByteArrayOutputStream();byte[] tmp=new byte[8192];int n;
-                                while((n=z.read(tmp))!=-1){
-                                    if(buffer.size()+n>12_000_000)throw new IOException("CSV interno grande demais");
-                                    buffer.write(tmp,0,n);
-                                }
-                                RadarStore.ParseResult r=RadarStore.parseAuto(new InputStreamReader(new ByteArrayInputStream(buffer.toByteArray()),"UTF-8"),e.getName(),200000);
-                                points.addAll(r.points);ignored+=r.skipped;
-                                if(points.size()>200000)throw new IOException("Mais de 200 mil pontos");
-                                z.closeEntry();
-                            }
-                        }
-                    }else{
-                        RadarStore.ParseResult r=RadarStore.parseAuto(new InputStreamReader(in,"UTF-8"),filename,200000);
-                        points.addAll(r.points);ignored=r.skipped;
-                    }
-                }
-                if(points.isEmpty())throw new IOException("Nenhum ponto reconhecido. Use CSV com longitude, latitude e tipo, ou cabeçalhos latitude/longitude/categoria; confira o formato exportado.");
-                if(radarMergeImport){
-                    // Adição preserva os pontos pessoais anteriores; nunca substitui os embutidos.
-                    points.addAll(radarStore.importedSnapshot());
-                }
-                points=RadarStore.dedupe(points);
-                radarStore.replaceImported(points);
-                radarStore.save(new File(getFilesDir(),"radar_personal.dat"));
-                final int loaded=radarStore.personalCount(),skipped=ignored;
-                handler.post(() -> {
-                    radarFileLoading=false;radarImportName=filename;radarImportAt=System.currentTimeMillis();
-                    radarImportStatus=loaded+" pontos importados • "+skipped+" linhas ignoradas";
-                    getPreferences(0).edit().putString("radar_import_name",filename).putLong("radar_import_at",radarImportAt).apply();
-                    snack("Base pessoal pronta: "+loaded+" pontos. Confira o diagnóstico.");
-                    if(dashboard!=null)dashboard.invalidate();
-                });
-            }catch(Exception error){
-                String message="Falha na importação: "+(error.getMessage()==null?error.getClass().getSimpleName():error.getMessage());
-                handler.post(() -> {radarFileLoading=false;radarImportStatus=message;popupInfo("Importar radares",message);});
-            }
-        },"PugRadarImport").start();
-    }
     /** Painel leve: aberto por toque do usuário, sem serviço adicional. */
     private void dismissQuick(){
         if(quickDialog!=null){Dialog d=quickDialog;quickDialog=null;try{d.dismiss();}catch(Exception ignored){}}
@@ -1146,58 +853,7 @@ public class MainActivity extends Activity {
         }
         return d;
     }
-    private void openRadarQuickMenu(){
-        if(drivingMode){snack("Configure o radar com o carro parado");return;}
-        quickPanel("RADAR • CONTROLE RÁPIDO",root -> {
-            switchRow(root,"Ativar todos os alertas",radarEnabled,(v,on)->enableRadar(on));
-            switchRow(root,"Avisos na tela",radarVisual,(v,on)->{
-                radarVisual=on;getPreferences(0).edit().putBoolean("radar_visual",on).apply();
-            });
-            switchRow(root,"Avisos sonoros",radarAudio,(v,on)->{
-                radarAudio=on;getPreferences(0).edit().putBoolean("radar_audio",on).apply();
-            });
-            divider(root);
-            section(root,"TIPOS DE ALERTA","Ative só os pontos que deseja receber");
-            for(int i=0;i<RadarStore.COUNT;i++){
-                final int type=i;
-                switchRow(root,RadarStore.LABELS[i],(radarTypesMask&(1<<i))!=0,(v,on)->{
-                    if(on)radarTypesMask|=(1<<type);else radarTypesMask&=~(1<<type);
-                    saveRadarTypes();
-                });
-            }
-            root.addView(label("Radar móvel: pontos históricos/possíveis locais de fiscalização. Não detecta operação policial ao vivo.",12,cMuted,false));
-            divider(root);
-            section(root,"BASE DE RADARES","Quantidade e atualização reais, sem estimativas");
-            int offlineCount = radarStore.personalCount()+radarStore.bundledCount();
-            root.addView(label("Tracksource integrado: "+radarStore.bundledCount()+" pontos • base pessoal: "+radarStore.personalCount(),17,offlineCount>0?cOk:cBad,true));
-            root.addView(label("Última atualização offline: " + radarImportedDate(),14,cText,false));
-            if (offlineCount > 0) {
-                root.addView(label("Arquivo importado: " + radarImportName,12,cMuted,false));
-                int[] byType=radarStore.personalCounts();
-                for(int i=0;i<RadarStore.COUNT;i++)if(byType[i]>0)
-                    root.addView(label("  • " + RadarStore.LABELS[i] + ": " + String.format(Locale.getDefault(), "%,d", byType[i]),12,cMuted,false));
-                if(radarImportAt>0 && System.currentTimeMillis()-radarImportAt>30L*86400000L)
-                    root.addView(label("Base com mais de 30 dias: considere atualizar manualmente.",12,cBad,false));
-            } else {
-                root.addView(label("Importe um CSV/ZIP obtido no site de origem para usar alertas offline.",13,cMuted,false));
-            }
-            root.addView(label("OSM online: " + radarCount + " pontos encontrados perto do GPS (raio de 7 km)",13,cText,false));
-            root.addView(label("Estado dos avisos: " + radarIssueHint(),12,cMuted,false));
-            root.addView(label("Indicador do botão: verde = GPS e pontos carregados; amarelo = precisa conferir; cinza = desligado.",12,cMuted,false));
-            root.addView(label("Importação: " + radarImportStatus,12,cMuted,false));
-            LinearLayout actions=new LinearLayout(this);root.addView(actions);
-            actionButton(actions,"Importar TXT/CSV/ZIP",this::chooseRadarFile);
-            actionButton(actions,"Diagnóstico",()->{dismissQuick();showRadarDiagnostic();});
-            LinearLayout tests=new LinearLayout(this);root.addView(tests);
-            actionButton(tests,"Testar aviso",()->{dismissQuick();simulateRadarAlert();});
-            actionButton(tests,"Teste móvel",()->{dismissQuick();simulateRadarAlertType(RadarStore.MOVEL);});
-            LinearLayout checkOnline=new LinearLayout(this);root.addView(checkOnline);
-            actionButton(checkOnline,"Consultar OSM",()->{
-                if(!netOnline||!gpsFresh()){snack("Precisa de GPS e internet");return;}
-                radarFetchAt=0;fetchRadars(gpsLat,gpsLon);snack("Buscando pontos próximos");
-            });
-        });
-    }
+
     /** Verifica se o Android/MCU reconhece realmente um controle como dispositivo de entrada HID. */
     private void showGamepadDiagnostic() {
         StringBuilder report=new StringBuilder("CONTROLES RECONHECIDOS PELO ANDROID\n\n");
@@ -1295,66 +951,8 @@ public class MainActivity extends Activity {
         });
     }
 
-    private String radarDiagnosticText() {
-        boolean permission = checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED;
-        long age = radarLastSuccessfulAt == 0 ? -1 : (SystemClock.elapsedRealtime() - radarLastSuccessfulAt) / 1000;
-        int nearCount=0,mobileCount=0;double nearest=Double.MAX_VALUE;
-        if(gpsFresh()&&!Double.isNaN(gpsLat)){
-            for(RadarStore.Point pt:radarStore.nearby(gpsLat,gpsLon,1500,radarTypesMask)){
-                double d=haversine(gpsLat,gpsLon,pt.lat,pt.lon);
-                if(d>1500)continue;
-                nearCount++;nearest=Math.min(nearest,d);
-                if(pt.type==RadarStore.MOVEL)mobileCount++;
-            }
-        }
-        return "Radar ativo: " + (radarEnabled ? "SIM" : "NÃO") +
-            "\nLocalização permitida: " + (permission ? "SIM" : "NÃO") +
-            "\nGPS recente: " + (gpsFresh() ? "SIM" : "NÃO") +
-            "\nPrecisão GPS: " + (gpsFresh() && gpsAccuracy>=0 ? Math.round(gpsAccuracy)+" m" : "--") +
-            "\nVelocidade GPS: " + (gpsFresh()?Math.round(gpsSpeedKmh)+" km/h":"--") +
-            "\nDireção de viagem: " + (gpsFresh() && gpsBearing>=0?compass(gpsBearing):"Indisponível") +
-            "\nInternet: " + (netOnline ? "SIM" : "NÃO") +
-            "\nConsulta em andamento: " + (radarFetching ? "SIM" : "NÃO") +
-            "\nFonte online OSM em 7 km: " + radarCount +
-            "\nBase Tracksource integrada: " + radarStore.bundledCount() + " pontos" +
-            "\nBase pessoal offline: " + radarOfflineSummary() +
-            "\nÚltima atualização offline: " + radarImportedDate() +
-            "\nArquivo: " + radarImportName +
-            "\nPontos habilitados a 1,5 km: " + nearCount + " (móveis: " + mobileCount + ")" +
-            "\nPonto mais próximo: " + (nearCount>0?Math.round(nearest)+" m":"nenhum cadastrado") +
-            "\nImportação: " + radarImportStatus +
-            "\nTipos ativos: " + radarSelectedTypes() +
-            "\nAviso visual/sonoro: " + (radarVisual?"SIM":"NÃO") + "/" + (radarAudio?"SIM":"NÃO") +
-            "\nÚltima consulta bem-sucedida: " + (age < 0 ? "nunca" : age/60+" min atrás") +
-            "\nEstado: " + radarError +
-            "\nDetalhe: " + radarLastDetail +
-            "\nPor que ainda não avisou? " + radarIssueHint() +
-            "\nÚltimo aviso: " + (radarLastAlertAt == 0 ? "nenhum" : (SystemClock.elapsedRealtime()-radarLastAlertAt)/60_000+" min atrás") +
-            "\nRadar móvel: local conhecido cadastrado, NÃO detecção ao vivo.\nAvisos só com launcher visível. Verifique sinalização da via.";
-    }
-    private void showRadarDiagnostic() {
-        ScrollView scroll = new ScrollView(this);
-        TextView details = label(radarDiagnosticText(), 16, cText, false);
-        details.setPadding(dp(18), dp(15), dp(18), dp(15));
-        scroll.addView(details);
-        AlertDialog d = new AlertDialog.Builder(this).setTitle("Radar • Diagnóstico")
-            .setView(scroll).setPositiveButton("Fechar", null)
-            .setNeutralButton("Consultar agora", null).setNegativeButton("Teste visual/sonoro", null).create();
-        d.setOnShowListener(v -> {
-            d.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(btn -> {
-                if (!gpsFresh() || Double.isNaN(gpsLat) || !netOnline) { snack("Precisa de GPS recente e internet"); return; }
-                radarFetchAt = 0;
-                fetchRadars(gpsLat, gpsLon);
-                handler.postDelayed(() -> { if (d.isShowing()) details.setText(radarDiagnosticText()); }, 3500);
-            });
-            d.getButton(AlertDialog.BUTTON_NEGATIVE).setOnClickListener(btn -> {
-                d.dismiss();
-                if (activeDialog != null && activeDialog.isShowing()) activeDialog.dismiss();
-                simulateRadarAlert();
-            });
-        });
-        d.show();
-    }
+
+
     // ---- escala dos menus de configuração (tela do carro) ----
     private static final String SCALED = "scaled";
     private void scaleTree(View v, float k) {
@@ -2519,7 +2117,6 @@ public class MainActivity extends Activity {
         b.append("Clima: ").append(lastWeatherSuccess > 0 ? "consulta concluída" : "sem consulta concluída").append('\n');
         b.append("Clima GPS: ").append(weatherAuto ? "ligado" : "desligado").append('\n');
         b.append("Cidade detectada: ").append(weatherDetail.isEmpty() ? "indisponível" : weatherDetail).append('\n');
-        b.append("Radar: ").append(radarEnabled ? "ligado" : "desligado").append(" • ").append(radarCount).append(" pontos online • ").append(radarStore.personalCount()).append(" pessoais • ").append(radarError).append('\n');
         b.append("Tema: ").append(PRESET_NAMES[presetIndex]).append(" • ")
                 .append(themeMode==0?"Automático":themeMode==1?"Escuro":"Claro")
                 .append(" • paleta ").append(night?"escura":"clara").append('\n');
@@ -2568,7 +2165,7 @@ public class MainActivity extends Activity {
     }
 
     // ---------------------------------------------------------------- configurações (abas, sem rolagem)
-    /** Configuração rápida do card, acessível com um toque no topo. Não interfere no radar. */
+    /** Configuração rápida do card, acessível com um toque no topo. */
     private void openSpeedCardMenu() {
         if (drivingMode || (gpsFresh() && speedNow() > 5)) {
             snack("Ajuste os avisos com o veículo estacionado");
@@ -2589,7 +2186,7 @@ public class MainActivity extends Activity {
         });
         choiceRow(root, "Tipo de aviso", new String[]{"Só velocidade", "Visual", "Sonoro", "Visual + som"}, speedWarningMode, this::saveSpeedWarningMode);
         root.addView(label("Visual: vermelho acima do limite e piscando acima de 15%. Sonoro: toque de alerta, sem precisar deixar o card vermelho.", 12, cMuted, false));
-        root.addView(label("O alerta de velocidade é independente dos avisos de radar. Os sons também respeitam a opção geral de áudio em Alertas.", 12, cDim, false));
+        root.addView(label("O alerta de velocidade utiliza o GPS e respeita a opção geral de áudio em Alertas.", 12, cDim, false));
         LinearLayout actions = new LinearLayout(this);
         actions.setGravity(Gravity.END);
         root.addView(actions, new LinearLayout.LayoutParams(-1, dp(55)));
@@ -2606,7 +2203,7 @@ public class MainActivity extends Activity {
     }
 
     private int topOptionalCount(){
-        return ((topBtVisible||topWifiVisible)?1:0)+(topBrightnessVisible?1:0)+(topRadarVisible?1:0)
+        return ((topBtVisible||topWifiVisible)?1:0)+(topBrightnessVisible?1:0)
                 +(topPcVisible?1:0)+(topEqVisible?1:0)+(topCustomVisible?1:0);
     }
     private boolean canShowExtraTop(boolean enabled){
@@ -2700,10 +2297,6 @@ public class MainActivity extends Activity {
                     switchRow(page,"Mostrar Brilho (toque / segurar 3 s)",topBrightnessVisible,(v,checked)->{
                         if (checked && !canShowExtraTop(true)) { ((Switch)v).setChecked(false); return; }
                         topBrightnessVisible=checked;getPreferences(0).edit().putBoolean("top_show_brightness",checked).apply();dashboard.invalidate();
-                    });
-                    switchRow(page,"Mostrar Radar",topRadarVisible,(v,checked)->{
-                        if (checked && !canShowExtraTop(true)) { ((Switch)v).setChecked(false); return; }
-                        topRadarVisible=checked;getPreferences(0).edit().putBoolean("top_show_radar",checked).apply();dashboard.invalidate();
                     });
                     switchRow(page,"Mostrar Veículo (submenu rápido)",topPcVisible,(v,checked)->{
                         if (checked && !canShowExtraTop(true)) { ((Switch)v).setChecked(false); return; }
@@ -2982,29 +2575,16 @@ public class MainActivity extends Activity {
                     break;
                 }
                 case 4: {
-                    section(page, "ALERTAS", "Limite de velocidade e radares, com popup e som");
+                    section(page, "VELOCIDADE", "Velocímetro GPS e aviso opcional de excesso de velocidade");
                     switchRow(page, "Alerta ao passar do limite de velocidade", speedAlert, (v, checked) -> { saveSpeedWarningMode(checked ? (speedWarningMode == 0 ? 3 : speedWarningMode) : 0); });
                     stepperRow(page, "Limite de velocidade", speedLimit, 30, 220, 10, " km/h", val -> { speedLimit = val; getPreferences(0).edit().putInt("speed_limit", val).apply(); dashboard.invalidate(); });
-                    switchRow(page, "Ativar radar (GPS + base offline/OSM)", radarEnabled, (v, checked) -> {
-                        radarEnabled = checked; getPreferences(0).edit().putBoolean("radar_alert", checked).apply();
-                        if (!checked) { radarStore.setOnline(Collections.emptyList()); radarFetchAt = 0; } refreshGpsNeed();
-                    });
-                    switchRow(page, "Som nos alertas de velocidade (radar tem controle próprio)", alertSound, (v, checked) -> { alertSound = checked; getPreferences(0).edit().putBoolean("alert_sound", checked).apply(); });
+                    switchRow(page, "Som nos alertas de velocidade", alertSound, (v, checked) -> { alertSound = checked; getPreferences(0).edit().putBoolean("alert_sound", checked).apply(); });
                     LinearLayout alertTests = new LinearLayout(this); alertTests.setPadding(0, dp(8), 0, dp(4)); page.addView(alertTests);
-                    actionButton(alertTests, "Testar radar", () -> {
-                        if (activeDialog != null && activeDialog.isShowing()) activeDialog.dismiss();
-                        showAlert(0, "TESTE DE RADAR", "Alerta simulado • sem radar real", 5000, true);
-                    });
                     actionButton(alertTests, "Testar velocidade", () -> {
                         if (activeDialog != null && activeDialog.isShowing()) activeDialog.dismiss();
                         showAlert(1, "VOCÊ ESTÁ ACIMA DE " + speedLimit + " km/h", "Teste: " + (speedLimit + 12) + " km/h", SPEED_ALERT_DURATION_MS, true);
                     });
-                    LinearLayout radarDiagRow = new LinearLayout(this); page.addView(radarDiagRow);
-                    actionButton(radarDiagRow, "Ver diagnóstico e consultar radares", this::showRadarDiagnostic);
-                    LinearLayout radarQuickRow=new LinearLayout(this);page.addView(radarQuickRow);
-                    actionButton(radarQuickRow,"Configurar tipos / importar CSV",this::openRadarQuickMenu);
-                    page.addView(label("Avisos aparecem com o launcher visível. A base pessoal CSV/ZIP funciona offline; OSM complementa os pontos conhecidos próximos.", 12, cMuted, false));
-                    page.addView(label("OSM: "+radarCount+" • Base pessoal: "+radarStore.personalCount()+" pontos. Radar móvel indica local conhecido, sem confirmação em tempo real.", 12, cMuted, false));
+                    page.addView(label("Aviso baseado na velocidade medida pelo GPS. Configure o modo visual/sonoro pelo card de velocidade.", 12, cMuted, false));
                     break;
                 }
                 case 5: {
@@ -4023,12 +3603,6 @@ public class MainActivity extends Activity {
             float groupX = x + (w - groupWidth)/2f;
             ic(kind, groupX + iconSize/2f, 36, iconSize, active ? accent : cDim);
             t(visibleLabel, groupX + iconSize + gapLabel, 41, fs, cText, tfMed);
-            if (id == 44) {
-                // Indicação factual: ativado NÃO significa que exista radar perto.
-                int status = !radarEnabled ? cDim :
-                        (gpsFresh() && (radarStore.personalCount() > 0 || radarCount > 0)) ? cOk : 0xffE0A333;
-                circle(x + w - 10, 22, 4.0f, status);
-            }
         }
 
         void topVolumeKey(int id, float x, float w, int kind, String description, boolean active) {
@@ -4065,7 +3639,6 @@ public class MainActivity extends Activity {
             ArrayList<Integer> choices = new ArrayList<>();
             if(topBtVisible||topWifiVisible)choices.add(48);
             if(topBrightnessVisible)choices.add(49); // ao lado de Rede, respeitando limite de atalhos
-            if(topRadarVisible)choices.add(44);
             if(topPcVisible)choices.add(43);
             if(topEqVisible)choices.add(7); // EQ sempre abre o painel COMPLETO
             if(topCustomVisible&&!topCustomPackage.isEmpty())choices.add(47);
@@ -4074,12 +3647,11 @@ public class MainActivity extends Activity {
             float itemW=Math.min(136,(right-left-spacing*(count-1))/count);
             float at=right-itemW*count-spacing*(count-1);
             for(int id:choices){
-                boolean enabled=id==48?(wifiConnected||btConnected):id==44?radarEnabled:id==43?vehicleMenuEnabled:id==7?(snd!=null&&snd.on):true;
+                boolean enabled=id==48?(wifiConnected||btConnected):id==43?vehicleMenuEnabled:id==7?(snd!=null&&snd.on):true;
                 if(id==48)topPill(id,at,itemW,I_WIFI,"Rede",enabled);
                 else if(id==49)topPill(id,at,itemW,
                         brightnessMode==BRIGHT_MIN?I_MOON:brightnessMode==BRIGHT_MAX?I_SUN:I_AUTO_BRIGHT,
                         "Brilho",true);
-                else if(id==44)topPill(id,at,itemW,I_RADAR,"Radar",enabled);
                 else if(id==43)topPill(id,at,itemW,I_TRIP,"Veículo",enabled);
                 else if(id==7)topPill(id,at,itemW,I_EQ,"EQ",enabled);
                 else if(id==47)topPill(id,at,itemW,I_GRID,fit(appLabel(topCustomPackage),12,tfMed,itemW-38),true);
@@ -4451,7 +4023,6 @@ public class MainActivity extends Activity {
                 case 47: if (!topCustomPackage.isEmpty()) launchPackage(topCustomPackage); break;
                 case 45: openSpeedCardMenu(); break;
                 case 46: if (userMuted) toggleMute(); break;
-                case 44: openRadarQuickMenu(); break;
                 case 48: openConnectionQuickMenu(); break;
                 case 49: cycleBrightness(); break;
                 case 6: if (!drivingMode) settings(); break;
@@ -4496,13 +4067,7 @@ public class MainActivity extends Activity {
                 lastHomeInteraction=SystemClock.uptimeMillis();
                 if(wasIdle && y>555) { pressedId=-1;invalidate();return true; }
             }
-            if (SystemClock.uptimeMillis() <= alertUntil && activeRadar != null) {
-                // O aviso permanece atualizado, mas não impede o usuário de operar a multimídia.
-                // Toque sobre o aviso silencia só o painel por 10 segundos (som segue ativo).
-                if(act==MotionEvent.ACTION_UP && x>=310 && x<=970 && y>=240 && y<=410){
-                    activeRadarMutedUntil=SystemClock.uptimeMillis()+10000;alertUntil=0;invalidate();return true;
-                }
-            } else if (SystemClock.uptimeMillis() <= alertUntil) {
+            if (SystemClock.uptimeMillis() <= alertUntil) {
                 pressedId = -1; if (act == MotionEvent.ACTION_UP) { alertUntil = 0; invalidate(); } return true;
             }
             switch (act) {
