@@ -54,6 +54,7 @@ final class SoundEngine {
     boolean autoVolOn = false;
     int autoVolMax = 3;       // máximo de níveis somados ao volume do usuário
     float bass = 0f;          // 0..1 (BassBoost)
+    float lowTone = 0f, highTone = 0f; // tonalidade independente -6..6 dB
     float balance = 0f, fader = 0f;   // -10..10
     float padX = -0.45f, padY = -0.35f; // ponto de escuta (-1..1)
     String fieldName = "Motorista";
@@ -121,6 +122,8 @@ final class SoundEngine {
         autoVolOn = sp.getBoolean("autovol_on", false);
         autoVolMax = Math.max(1, Math.min(6, sp.getInt("autovol_max", 3)));
         bass = EqMath.clamp(sp.getFloat("bass", 0f), 0f, 1f);
+        lowTone = EqMath.clamp(sp.getFloat("low_tone", 0f), -6f, 6f);
+        highTone = EqMath.clamp(sp.getFloat("high_tone", 0f), -6f, 6f);
         balance = EqMath.clamp(sp.getFloat("balance", 0f), -10f, 10f);
         fader = EqMath.clamp(sp.getFloat("fader", 0f), -10f, 10f);
         padX = EqMath.clamp(sp.getFloat("pad_x", -0.45f), -1f, 1f);
@@ -141,6 +144,7 @@ final class SoundEngine {
             .putString("user_bands", join(userBand)).putFloat("user_pre", userPre).putString("custom", cu.toString())
             .putBoolean("loud_on", loudOn).putFloat("loud_amt", loudAmt).putFloat("loud_below", loudBelow)
             .putBoolean("autovol_on", autoVolOn).putInt("autovol_max", autoVolMax).putFloat("bass", bass)
+            .putFloat("low_tone", lowTone).putFloat("high_tone", highTone)
             .putFloat("balance", balance).putFloat("fader", fader).putFloat("pad_x", padX).putFloat("pad_y", padY)
             .putString("field", fieldName).apply();
     }
@@ -255,6 +259,10 @@ final class SoundEngine {
             // Reforço progressivo de graves pela mesma cadeia EQ já testada na central.
             // Evita o BassBoost nativo que em alguns firmwares inverte a sensação de graves.
             float mid=(lo+hi)*.5f;
+            if (mid < 170f) out[b] += lowTone;
+            else if (mid < 380f) out[b] += lowTone * .45f;
+            if (mid > 4500f) out[b] += highTone;
+            else if (mid > 2300f) out[b] += highTone * .45f;
             if(mid < 110f) out[b] += bass * 1.5f;
             else if(mid < 170f) out[b] += bass * 0.5f;
         }
@@ -385,6 +393,8 @@ final class SoundEngine {
     void setAutoVol(boolean v) { autoVolOn = v; if (v) { autoBlocked = false; ignoredSets = 0; } saveSoon(); }
     void setAutoVolMax(int v) { autoVolMax = Math.max(1, Math.min(6, v)); saveSoon(); }
     void setBass(float v) { bass = EqMath.clamp(v, 0f, 1f); changed(); }
+    void setLowTone(float v) { lowTone = EqMath.clamp(v, -6f, 6f); changed(); }
+    void setHighTone(float v) { highTone = EqMath.clamp(v, -6f, 6f); changed(); }
 
     // campo sonoro: o Android não tem API pública de balanço/fader; os valores ficam salvos e são enviados por broadcast
     void setField(float x, float y, String name) {

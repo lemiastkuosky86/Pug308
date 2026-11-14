@@ -107,6 +107,11 @@ public class MainActivity extends Activity {
     private boolean lyricsOn=false;
     private boolean speedPreferGps = true;
     private boolean immersiveIdle = true;
+    // Tela de descanso v1.51: apenas interface; nao altera som, Wi-Fi ou estado do carro.
+    private boolean screenSaverEnabled = true;
+    private int screenSaverSeconds = 180;
+    private Dialog screenSaverDialog;
+    private long screenSaverDismissedAt = 0L;
     private static final long HOME_IDLE_MS = 180000L; // três minutos
     private static final long HOME_TRANSITION_MS = 780L; // transição de layout e dock mais suave
     private float homeIdleFraction = 0f;
@@ -488,6 +493,14 @@ public class MainActivity extends Activity {
             updateDrivingMode();
             if (appForeground || (snd != null && snd.autoVolOn)) pushSoundState();
             checkAlerts();
+            if (appForeground && screenSaverEnabled && screenSaverDialog == null
+                    && !drivingMode && dashboard != null && dashboard.hasWindowFocus()
+                    && (activeDialog == null || !activeDialog.isShowing())
+                    && (eqDialog == null || !eqDialog.isShowing())
+                    && SystemClock.uptimeMillis() - lastHomeInteraction >= screenSaverSeconds * 1000L
+                    && SystemClock.uptimeMillis() - screenSaverDismissedAt >= 5000L) {
+                openScreenSaver();
+            }
             if (effectiveNight() != night) applyTheme();
             // Brilho, rede e sessão são checados em cadências independentes.
             if (brightnessMode == BRIGHT_AUTO && tickCount % 60 == 0) applyBrightness();
@@ -716,6 +729,8 @@ public class MainActivity extends Activity {
         for(int tab=0;tab<7;tab++)lastSettingsScroll[tab]=Math.max(0,prefs.getInt("settings_scroll_"+tab,0));
         speedPreferGps = prefs.getBoolean("speed_prefer_gps",true);
         immersiveIdle = prefs.getBoolean("immersive_idle",true);
+        screenSaverEnabled = prefs.getBoolean("screensaver_enabled", true);
+        screenSaverSeconds = Math.max(60, Math.min(900, prefs.getInt("screensaver_seconds", 180)));
         topWidgetEnabled = prefs.getBoolean("top_widget", true);
         topBtVisible = prefs.getBoolean("top_show_bt", true);
         topWifiVisible = prefs.getBoolean("top_show_wifi", true);
@@ -799,6 +814,7 @@ public class MainActivity extends Activity {
     @Override protected void onResume() {
         super.onResume();
         appForeground = true;
+        lastHomeInteraction = SystemClock.uptimeMillis();
         logField("APP", "resume");
         // Permissão de notificações pode ter sido concedida enquanto a Activity
         // estava pausada; tentar registrar novamente, sem duplicar ouvintes.
@@ -824,6 +840,7 @@ public class MainActivity extends Activity {
         wifiAutoPausedAtElapsed = 0L;
     }
     @Override protected void onPause() {
+        if (screenSaverDialog != null) screenSaverDialog.dismiss();
         if (dashboard != null) dashboard.setWeatherAnimationActive(false);
         appForeground = false;
         logField("APP", "pause");
@@ -2444,6 +2461,64 @@ public class MainActivity extends Activity {
         new AlertDialog.Builder(this).setTitle("Diagnóstico de áudio")
             .setMessage(detail).setPositiveButton("Fechar", null).show();
     }
+    /** Tela de descanso minimalista. Sem WakeLock: respeita a suspensao da central. */
+    private void openScreenSaver() {
+        if (isFinishing() || screenSaverDialog != null) return;
+        final Dialog dlg = new Dialog(this, android.R.style.Theme_Material_NoActionBar_Fullscreen);
+        screenSaverDialog = dlg;
+        final View clock = new View(this) {
+            final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+            final Runnable refresh = new Runnable() {
+                @Override public void run() {
+                    if (screenSaverDialog == dlg && dlg.isShowing()) {
+                        invalidate(); postDelayed(this, 1000L);
+                    }
+                }
+            };
+            @Override protected void onAttachedToWindow() {
+                super.onAttachedToWindow(); post(refresh);
+            }
+            @Override protected void onDetachedFromWindow() {
+                removeCallbacks(refresh); super.onDetachedFromWindow();
+            }
+            @Override protected void onDraw(Canvas c) {
+                super.onDraw(c);
+                float w = getWidth(), h = getHeight();
+                c.drawColor(cBg0);
+                Calendar now = Calendar.getInstance();
+                String hour = new SimpleDateFormat("HH:mm", new Locale("pt", "BR")).format(now.getTime());
+                String date = new SimpleDateFormat("EEEE, dd 'de' MMMM", new Locale("pt", "BR")).format(now.getTime());
+                paint.setTextAlign(Paint.Align.CENTER);
+                paint.setTypeface(Typeface.create("sans-serif-light", Typeface.NORMAL));
+                paint.setTextSize(Math.min(h * .34f, w * .22f));
+                paint.setColor(cText);
+                float baseline = h * .49f - (paint.ascent() + paint.descent()) * .5f;
+                c.drawText(hour, w / 2f, baseline, paint);
+                paint.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+                paint.setTextSize(Math.min(h * .065f, 36f * getResources().getDisplayMetrics().scaledDensity));
+                paint.setColor(accent);
+                c.drawText(date, w / 2f, h * .73f, paint);
+                paint.setTextSize(Math.min(h * .032f, 17f * getResources().getDisplayMetrics().scaledDensity));
+                paint.setColor(cMuted);
+                c.drawText("Toque para voltar", w / 2f, h * .92f, paint);
+            }
+        };
+        clock.setOnClickListener(v -> dlg.dismiss());
+        dlg.setContentView(clock);
+        dlg.getWindow().setBackgroundDrawableResource(android.R.color.transparent);
+        dlg.getWindow().setFlags(android.view.WindowManager.LayoutParams.FLAG_FULLSCREEN,
+                android.view.WindowManager.LayoutParams.FLAG_FULLSCREEN);
+        dlg.setOnDismissListener(d -> {
+            if (screenSaverDialog == dlg) screenSaverDialog = null;
+            screenSaverDismissedAt = SystemClock.uptimeMillis();
+            lastHomeInteraction = screenSaverDismissedAt;
+            logField("TELA_DESCANSO", "fechada");
+            if (dashboard != null) dashboard.invalidate();
+        });
+        try { dlg.show(); logField("TELA_DESCANSO", "aberta"); }
+        catch (Exception ex) { screenSaverDialog = null; }
+    }
+
     private void settings() { settings(lastSettingsTab); }
     private void settings(int initialTab) {
         feedback();
@@ -2523,6 +2598,23 @@ public class MainActivity extends Activity {
                     page.addView(label("Brilho: toque = Auto → Mínimo → Máximo; segurar por 0,7 segundo = ajuste manual. EQ permanece completo.",12,cMuted,false));
                     page.addView(label("Estas opções escondem apenas os botões da barra, não desligam Bluetooth, Wi-Fi ou os serviços do veículo.",12,cMuted,false));
                     page.addView(label("Se o Wi-Fi desliga ao ligar o carro, confira as configurações de energia/rede da Jancar: o launcher não executa comandos para desligá-lo.",12,cMuted,false));
+                    divider(page);
+                    section(page, "TELA DE DESCANSO", "Relogio em tela cheia; o som continua tocando e um toque retorna a Home.");
+                    switchRow(page, "Ativar tela de descanso automatica", screenSaverEnabled, (v,checked)->{
+                        screenSaverEnabled=checked; getPreferences(0).edit().putBoolean("screensaver_enabled", checked).apply();
+                        lastHomeInteraction=SystemClock.uptimeMillis();
+                    });
+                    stepperRow(page, "Iniciar apos", screenSaverSeconds / 60, 1, 15, 1, " min", val->{
+                        screenSaverSeconds=val * 60;
+                        getPreferences(0).edit().putInt("screensaver_seconds",screenSaverSeconds).apply();
+                        lastHomeInteraction=SystemClock.uptimeMillis();
+                    });
+                    LinearLayout saverButtons=new LinearLayout(this);page.addView(saverButtons);
+                    actionButton(saverButtons,"Testar tela de descanso",()->{
+                        if (activeDialog!=null && activeDialog.isShowing()) activeDialog.dismiss();
+                        handler.postDelayed(this::openScreenSaver, 250L);
+                    });
+                    page.addView(label("Nao abre quando o modo direcao esta ativo. Respeita o standby da central e nao interrompe o Spotify.",12,cMuted,false));
                     divider(page);
                     switchRow(page,"Recolher atalhos após 3 minutos sem tocar",immersiveIdle,(v,checked)->{
                         immersiveIdle=checked;getPreferences(0).edit().putBoolean("immersive_idle",checked).apply();
@@ -2826,6 +2918,13 @@ public class MainActivity extends Activity {
                     LinearLayout fadeTest = new LinearLayout(this); fadeTest.setPadding(0, dp(8), 0, 0); page.addView(fadeTest);
                     actionButton(fadeTest, "Testar fade agora", () -> fadeFromZero());
                     actionButton(fadeTest, "Abrir equalizador", () -> openEq());
+                    divider(page);
+                    section(page, "TONALIDADE", "Tres controles independentes: grave, agudo e reforco. Processados pelo EQ Android quando o firmware permite.");
+                    stepperRow(page,"Graves", Math.round(snd.lowTone), -6, 6, 1, " dB", v -> snd.setLowTone(v));
+                    stepperRow(page,"Agudos", Math.round(snd.highTone), -6, 6, 1, " dB", v -> snd.setHighTone(v));
+                    stepperRow(page,"Reforco de graves", Math.round(snd.bass * 10f), 0, 10, 1, "", v -> snd.setBass(v / 10f));
+                    page.addView(label("A resposta sonora depende do processamento Android/MCU da Jancar; se nao houver efeito audivel, utilize Som original Jancar.",12,cMuted,false));
+
                     LinearLayout oemAudio=new LinearLayout(this);oemAudio.setPadding(0,dp(8),0,0);page.addView(oemAudio);
                     actionButton(oemAudio,"Som original Jancar (balanço / fader)",()->openJancarSound());
                     LinearLayout audioDiagnostics=new LinearLayout(this);page.addView(audioDiagnostics);
