@@ -3362,7 +3362,7 @@ public class MainActivity extends Activity {
 
     private class Dashboard extends View {
         static final int I_NAV = 0, I_RADIO = 1, I_NOTE = 2, I_PHONE = 3, I_BT = 4, I_GRID = 5, I_GEAR = 6, I_WIFI = 7,
-                I_MINUS = 8, I_PLUS = 9, I_PREV = 10, I_NEXT = 11, I_PLAY = 12, I_PAUSE = 13, I_SPEAKER = 14, I_MUTE = 15, I_HOME = 16, I_WORK = 17, I_MENU = 18, I_TRIP = 19, I_BACK = 20, I_EQ = 21, I_YOUTUBE = 22, I_MAPS = 23, I_CHROME = 24, I_RADAR = 25, I_SUN = 26, I_MOON = 27, I_AUTO_BRIGHT = 28;
+                I_MINUS = 8, I_PLUS = 9, I_PREV = 10, I_NEXT = 11, I_PLAY = 12, I_PAUSE = 13, I_SPEAKER = 14, I_MUTE = 15, I_HOME = 16, I_WORK = 17, I_MENU = 18, I_TRIP = 19, I_BACK = 20, I_EQ = 21, I_YOUTUBE = 22, I_MAPS = 23, I_CHROME = 24, I_SUN = 26, I_MOON = 27, I_AUTO_BRIGHT = 28;
         final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG), mp = new Paint(Paint.ANTI_ALIAS_FLAG);
         final RectF r = new RectF();
         final Path path = new Path();
@@ -3495,12 +3495,6 @@ public class MainActivity extends Activity {
                     canvas.drawArc(-.54f*u,-.54f*u,.92f*u,.92f*u,-55,105,false,p);
                     canvas.drawLine(-.16f*u,-.91f*u,-.16f*u,-.72f*u,p);
                     break;
-                }
-                case I_RADAR: {
-                    stroke(col,sw*.9f);canvas.drawArc(-.92f*u,-.92f*u,.92f*u,.92f*u,195,130,false,p);
-                    canvas.drawArc(-.63f*u,-.63f*u,.63f*u,.63f*u,195,130,false,p);
-                    canvas.drawLine(0,0,.78f*u,-.78f*u,p);
-                    fill(col);canvas.drawCircle(0,0,.16f*u,p);break;
                 }
                 case I_YOUTUBE: {
                     fill(col); r.set(-.95f*u,-.65f*u,.95f*u,.65f*u);canvas.drawRoundRect(r,.27f*u,.27f*u,p);
