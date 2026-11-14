@@ -164,6 +164,7 @@ public class MainActivity extends Activity {
     private boolean mediaSessionObserverRegistered = false;
 
     private Dashboard dashboard;
+    private PardalRadar pardalRadar;
     private JancarBridge jancarBridge;
     private int accentBase = Color.rgb(0, 174, 255), accent = accentBase, onAccent = Color.WHITE;
     private boolean beep;
@@ -390,12 +391,16 @@ public class MainActivity extends Activity {
             gpsAlt = l.hasAltitude() ? l.getAltitude() : Double.NaN;
             gpsLat = l.getLatitude(); gpsLon = l.getLongitude();
             if (weatherAuto) tryAutoWeather();
+            if (pardalRadar != null) {
+                if (!RadarForegroundService.isRunning()) pardalRadar.onLocation(l);
+                if (dashboard != null) dashboard.invalidate();
+            }
         }
         @Override public void onStatusChanged(String provider, int status, Bundle extras) {}
         @Override public void onProviderEnabled(String provider) {}
         @Override public void onProviderDisabled(String provider) {}
     };
-    private boolean needGps() { return weatherAuto || vehicleMenuEnabled || topWidgetEnabled || drivingEnabled || speedAlert || speedPreferGps || (snd != null && snd.autoVolOn); }
+    private boolean needGps() { return weatherAuto || vehicleMenuEnabled || topWidgetEnabled || drivingEnabled || speedAlert || speedPreferGps || (snd != null && snd.autoVolOn) || (pardalRadar != null && pardalRadar.mode()!=PardalRadar.OFF); }
     private boolean gpsFresh() { return gpsLastFix > 0 && SystemClock.elapsedRealtime() - gpsLastFix < 6000; }
     private void startGps() {
         if (gpsRunning || !needGps()) return;
@@ -490,6 +495,10 @@ public class MainActivity extends Activity {
 
     private final Runnable tick = new Runnable() {
         public void run() {
+            if(pardalRadar!=null&&pardalRadar.isSimulating()){
+                pardalRadar.simulationTick();
+                if(dashboard!=null)dashboard.invalidate();
+            }
             updateDrivingMode();
             if (appForeground || (snd != null && snd.autoVolOn)) pushSoundState();
             checkAlerts();
@@ -508,6 +517,7 @@ public class MainActivity extends Activity {
             if (tickCount % (appForeground ? 3 : 12) == 0) { refreshConnections(); logPeriodicHealth(); }
             if (tickCount % (appForeground ? 15 : 45) == 0) updateMedia();
             if (tickCount % 600 == 599) maybeAutoUpdate();
+            if (tickCount % 60 == 0 && pardalRadar != null) pardalRadar.checkDaily(wifiConnected);
             tickCount++;
             if (dashboard != null && dashboard.getWindowToken() != null && !isFinishing()) {
                 Calendar now = Calendar.getInstance();
@@ -675,6 +685,7 @@ public class MainActivity extends Activity {
         snd = SoundEngine.get(this); // inicializa o efeito depois que a primeira tela for exibida
         SharedPreferences prefs = getPreferences(0);
         fieldLog = new FieldLog(getApplicationContext(), prefs.getBoolean("field_log_enabled", false));
+        pardalRadar = PardalRadar.shared(this,prefs);
         logField("APP", "create version="+BuildConfig.VERSION_NAME+" uptimeMs="+SystemClock.elapsedRealtime()
                 +" start="+(SystemClock.elapsedRealtime()<6*60*1000L?"boot_recente":"processo_recriado_ou_retorno"));
         presetIndex = Math.max(0, Math.min(PRESET_NAMES.length - 1, prefs.getInt("theme2", 0))); // padrão: Peugeot Âmbar (preto + âmbar)
@@ -799,13 +810,15 @@ public class MainActivity extends Activity {
         ArrayList<String> need = new ArrayList<>();
         if (Build.VERSION.SDK_INT >= 31 && checkSelfPermission("android.permission.BLUETOOTH_CONNECT") != PackageManager.PERMISSION_GRANTED) need.add("android.permission.BLUETOOTH_CONNECT");
         if (needGps() && checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) need.add(Manifest.permission.ACCESS_FINE_LOCATION);
-        if (!need.isEmpty()) requestPermissions(need.toArray(new String[0]), 14); else startGps();
+        if (!need.isEmpty()) requestPermissions(need.toArray(new String[0]), 14); else {startGps();syncRadarService();}
         registerNetworkWatcher();
         if (!weatherCity.isEmpty() && !weatherAuto) fetchWeather(); else if (weatherAuto) tryAutoWeather();
+
         registerScreenReceiver();
         // Em algumas centrais o estado Wi-Fi só estabiliza depois de acordar a MCU.
         // Uma tentativa por inicialização; sem polling nem serviço residente.
         if (wifiAutoOn) startWifiWakeMonitor("inicio");
+        handler.postDelayed(()->{if(pardalRadar!=null)pardalRadar.checkDaily(wifiConnected);},15000);
         handler.post(shineTick);
         if (!bootArmed) { bootArmed = true; if (SystemClock.elapsedRealtime() < 6 * 60 * 1000L) armStartupFade(); } // ligou o carro (boot recente)
         handler.post(tick);
@@ -824,6 +837,9 @@ public class MainActivity extends Activity {
         }
         if (pendingInstall != null && getPackageManager().canRequestPackageInstalls()) { Uri pu = pendingInstall; pendingInstall = null; installApk(pu); }
         startGps();
+        if(pardalRadar!=null)pardalRadar.checkDaily(wifiConnected);
+        RadarForegroundService.setHomeVisible(true);
+        syncRadarService();
         // onResume também ocorre no primeiro lançamento: não duplicar a inicialização do áudio.
         if (!firstResume && snd != null) snd.start();
         firstResume = false;
@@ -843,6 +859,8 @@ public class MainActivity extends Activity {
         if (screenSaverDialog != null) screenSaverDialog.dismiss();
         if (dashboard != null) dashboard.setWeatherAnimationActive(false);
         appForeground = false;
+        RadarForegroundService.setHomeVisible(false);
+        if(pardalRadar!=null)pardalRadar.stopSimulation();
         logField("APP", "pause");
         wifiAutoPausedAtElapsed = SystemClock.elapsedRealtime();
         if (snd == null || !snd.autoVolOn) stopGps();
@@ -872,13 +890,14 @@ public class MainActivity extends Activity {
         try { if (netCallback != null) ((ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE)).unregisterNetworkCallback(netCallback); } catch (Exception ignored) {}
         stopGps();
         try { if (screenReceiver != null) unregisterReceiver(screenReceiver); } catch (Exception ignored) {}
+        if (pardalRadar != null && !RadarForegroundService.isRunning()) pardalRadar.close();
         if (alertTone != null) alertTone.release();
         if (tone != null) tone.release();
         super.onDestroy();
     }
     @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-        if (requestCode == 14) { refreshConnections(); startGps(); }
+        if (requestCode == 14) { refreshConnections(); startGps(); syncRadarService(); }
     }
 
     // ================================================================ v1.12
@@ -2426,6 +2445,83 @@ public class MainActivity extends Activity {
         if (dialog.getWindow() != null) dialog.getWindow().setLayout(Math.min(dp(790), getResources().getDisplayMetrics().widthPixels - dp(24)), WindowManager.LayoutParams.WRAP_CONTENT);
     }
 
+    // O serviço de localização deve começar com Activity visível para respeitar as
+    // restrições de localização/serviços em primeiro plano do Android moderno.
+    private void syncRadarService(){
+        if(pardalRadar==null)return;
+        Intent service=new Intent(this,RadarForegroundService.class);
+        if(pardalRadar.mode()==PardalRadar.OFF){
+            if(RadarForegroundService.isRunning())stopService(service);
+            return;
+        }
+        if(checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)!=PackageManager.PERMISSION_GRANTED)return;
+        if(RadarForegroundService.isRunning())return;
+        try{
+            if(Build.VERSION.SDK_INT>=26)startForegroundService(service);
+            else startService(service);
+            logField("RADAR","servico_iniciado");
+        }catch(Exception e){logField("RADAR","servico_indisponivel="+e.getClass().getSimpleName());}
+    }
+    private void radarOverlayPermission(){
+        if(Build.VERSION.SDK_INT>=23&&!Settings.canDrawOverlays(this)){
+            new AlertDialog.Builder(this).setTitle("Avisos de radar sobre outros apps")
+                .setMessage("Para mostrar o radar enquanto Waze, Maps ou Android Auto estiverem abertos, autorize a sobreposição do Peugeot 308 Launcher. Sem essa permissão, o alerta sonoro e a notificação continuam disponíveis quando o serviço estiver ativo.")
+                .setPositiveButton("Abrir permissão",(d,w)->{
+                    try{startActivity(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                         Uri.parse("package:"+getPackageName())));}catch(Exception e){snack("Abra Permissões especiais > Sobrepor outros apps.");}
+                }).setNegativeButton("Depois",null).show();
+        }else snack("Sobreposição já autorizada");
+    }
+    private void radarTools(){
+        if(pardalRadar==null)return;
+        String[] tools={"Estado da base e GPS", "Atualizar radares agora (Wi-Fi)",
+                pardalRadar.isSimulating()?"Parar simulação":"Simular radar de 350 a 0 m",
+                "Permitir avisos sobre outros aplicativos"};
+        new AlertDialog.Builder(this).setTitle("Radar Pardal • Ferramentas")
+            .setItems(tools,(d,which)->{
+                switch(which){
+                    case 0:
+                        new AlertDialog.Builder(this).setTitle("Base Pardal • São Paulo")
+                          .setMessage(pardalRadar.status()+"\nÚltima atualização: "+pardalRadar.lastUpdated()
+                            +"\n"+pardalRadar.gpsStatus()
+                            +"\nServiço ativo: "+RadarForegroundService.isRunning()
+                            +"\nSobreposição: "+Settings.canDrawOverlays(this)
+                            +"\nFonte: Pardal (ODbL). A sinalização local prevalece.")
+                          .setPositiveButton("OK",null).show();break;
+                    case 1:
+                        pardalRadar.forceUpdate(wifiConnected||netOnline);
+                        snack("Atualização solicitada: "+pardalRadar.status());break;
+                    case 2:
+                        if(pardalRadar.isSimulating()){
+                            pardalRadar.stopSimulation();snack("Simulação encerrada");
+                        }else{
+                            pardalRadar.startSimulation();
+                            snack("Simulação de radar: 350 m até 0 m, velocidade de teste 80 km/h");
+                        }
+                        if(dashboard!=null)dashboard.invalidate();break;
+                    case 3: radarOverlayPermission();break;
+                }
+            }).setNegativeButton("Fechar",null).show();
+    }
+    private void openPardalMenu(){
+        if(pardalRadar==null)return;
+        String[] modes={"Ligado (inteligente: som acima do limite)","Ligado apenas visual",
+                "Ligado visual e áudio","Desligado"};
+        new AlertDialog.Builder(this).setTitle("RADAR • PARDAL SP")
+            .setSingleChoiceItems(modes,pardalRadar.mode(),(d,which)->{
+                pardalRadar.setMode(which);d.dismiss();
+                if(which!=PardalRadar.OFF){
+                    if(checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)!=PackageManager.PERMISSION_GRANTED)
+                        requestPermissions(new String[]{Manifest.permission.ACCESS_FINE_LOCATION},14);
+                    else {startGps();syncRadarService();}
+                    pardalRadar.checkDaily(wifiConnected||netOnline);
+                    if(Build.VERSION.SDK_INT>=33&&checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)!=PackageManager.PERMISSION_GRANTED)
+                        requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS},153);
+                }else syncRadarService();
+                if(dashboard!=null)dashboard.invalidate();
+            }).setNeutralButton("Ferramentas",(d,w)->radarTools())
+            .setNegativeButton("Fechar",null).show();
+    }
     private int topOptionalCount(){
         return ((topBtVisible||topWifiVisible)?1:0)+(topBrightnessVisible?1:0)
                 +(topPcVisible?1:0)+(topEqVisible?1:0)+(topCustomVisible?1:0);
@@ -3331,6 +3427,7 @@ public class MainActivity extends Activity {
         if (netOnline && (!weatherCity.isEmpty() || weatherAuto) && !weatherLoading && (!was || weatherStale() || weatherFailed)) fetchWeather();
         if (dashboard != null && (netOnline != was || wifiConnected != wifiWas)) dashboard.invalidate();
         if (netOnline && !was) handler.postDelayed(this::maybeAutoUpdate, 8000);
+        if (wifiConnected && pardalRadar != null) pardalRadar.checkDaily(true);
         if (netOnline != was || wifiConnected != wifiWas)
             logField("WIFI", "internet="+netOnline+" wifi="+wifiConnected);
     }
@@ -3911,7 +4008,7 @@ public class MainActivity extends Activity {
                 drawAnimatedDock(f);
             }
             if (progress < 1f) postInvalidateOnAnimation();
-            drawVolume(); drawAlertPopup(); // alertas urgentes à frente do indicador de mudo
+            drawVolume(); drawAlertPopup(); drawPardalPopup(); // Radar aparece sobre a Home
             c.restore();
         }
 
@@ -4010,17 +4107,19 @@ public class MainActivity extends Activity {
             // 4 atalhos rápidos + Config fixo. Wi-Fi e Bluetooth são um único submenu.
             ArrayList<Integer> choices = new ArrayList<>();
             if(topBtVisible||topWifiVisible)choices.add(48);
+            choices.add(50); // botão Radar fixo perto de Rede
             if(topBrightnessVisible)choices.add(49); // ao lado de Rede, respeitando limite de atalhos
             if(topPcVisible)choices.add(43);
             if(topEqVisible)choices.add(7); // EQ sempre abre o painel COMPLETO
             if(topCustomVisible&&!topCustomPackage.isEmpty())choices.add(47);
-            while(choices.size()>4)choices.remove(choices.size()-1);
+            while(choices.size()>5)choices.remove(choices.size()-1);
             int count=choices.size()+1;
             float itemW=Math.min(136,(right-left-spacing*(count-1))/count);
             float at=right-itemW*count-spacing*(count-1);
             for(int id:choices){
                 boolean enabled=id==48?(wifiConnected||btConnected):id==43?vehicleMenuEnabled:id==7?(snd!=null&&snd.on):true;
                 if(id==48)topPill(id,at,itemW,I_WIFI,"Rede",enabled);
+                else if(id==50)topPill(id,at,itemW,I_TRIP,"Radar",pardalRadar!=null&&pardalRadar.mode()!=PardalRadar.OFF);
                 else if(id==49)topPill(id,at,itemW,
                         brightnessMode==BRIGHT_MIN?I_MOON:brightnessMode==BRIGHT_MAX?I_SUN:I_AUTO_BRIGHT,
                         "Brilho",true);
@@ -4378,6 +4477,25 @@ public class MainActivity extends Activity {
             }
         }
 
+        void drawPardalPopup(){
+            if(pardalRadar==null||!pardalRadar.active())return;
+            int d=pardalRadar.distance(), lim=pardalRadar.limit();
+            boolean over=pardalRadar.over();
+            float x=388,y=87,w=504,h=154;
+            rr(x,y,w,h,20,0xff17212D);
+            rrs(x,y,w,h,20,over?0xffF26B67:0xff477D8B,2);
+            rr(x+18,y+17,112,112,16,0xffF9FAFB);
+            circle(x+74,y+73,47,0xffE03B3B);
+            circle(x+74,y+73,40,Color.WHITE);
+            text(lim>0?String.valueOf(lim):"?",x+74,y+86,43,Color.BLACK,tfBold,Paint.Align.CENTER,0);
+            text(pardalRadar.kind(),x+151,y+36,17,0xffE2E8F0,tfBold,Paint.Align.LEFT,.03f);
+            text(d+" m",x+151,y+90,49,Color.WHITE,tfBold,Paint.Align.LEFT,0);
+            text("ATUAL "+pardalRadar.speed()+" km/h",x+151,y+123,18,over?0xffFF7777:0xff77DDAA,tfBold,Paint.Align.LEFT,0);
+            if(over)text("REDUZA",x+w-17,y+35,15,0xffFF7777,tfBold,Paint.Align.RIGHT,0);
+            rr(x+148,y+h-9,w-164,4,2,0xff394653);
+            rr(x+148,y+h-9,(w-164)*Math.max(0f,Math.min(1f,(350f-d)/350f)),4,2,
+                    over?0xffFF7777:0xff77DDAA);
+        }
         void drawAlertPopup() {
             long now = SystemClock.uptimeMillis();
             if (now > alertUntil) return;
@@ -4459,6 +4577,7 @@ public class MainActivity extends Activity {
                 case 46: if (userMuted) toggleMute(); break;
                 case 48: openConnectionQuickMenu(); break;
                 case 49: cycleBrightness(); break;
+                case 50: openPardalMenu(); break;
                 case 6: if (!drivingMode) settings(); break;
                 case 7: openEq(); break;
                 case 40: openVehicleQuickMenu(); break;

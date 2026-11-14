@@ -10,6 +10,7 @@ import java.util.Locale;
 /** Histórico PRIVADO e limitado: sem logcat, localização, nome de músicas ou dados de rede identificáveis. */
 public final class FieldLog {
     private static final long LIMIT=512L*1024L;
+    private static final Object FILE_LOCK=new Object();
     private final File file;
     private volatile boolean enabled;
     private final SimpleDateFormat format = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS",Locale.US);
@@ -17,10 +18,10 @@ public final class FieldLog {
     public synchronized boolean isEnabled(){return enabled;}
     public synchronized void setEnabled(boolean enabled){this.enabled=enabled;}
     public synchronized int sizeKb(){return (int)((file.length()+1023)/1024);}
-    public synchronized void clear(){if(file.exists())file.delete();}
+    public synchronized void clear(){synchronized(FILE_LOCK){if(file.exists())file.delete();}}
     public synchronized void record(String category,String data){
         if(!enabled)return;
-        try {
+        synchronized(FILE_LOCK){try {
             if(file.length()>LIMIT){
                 byte[] all=new byte[(int)file.length()];
                 try(FileInputStream input=new FileInputStream(file)){int done=0,n;while(done<all.length&&(n=input.read(all,done,all.length-done))>0)done+=n;}
@@ -34,9 +35,10 @@ public final class FieldLog {
             }
             String line=format.format(new Date())+" ["+category+"] "+data.replace('\n',' ')+'\n';
             try(FileOutputStream output=new FileOutputStream(file,true)){output.write(line.getBytes(StandardCharsets.UTF_8));}
-        }catch(IOException ignored){}
+        }catch(IOException ignored){} }
     }
     public synchronized String exportText(String snapshot) throws IOException {
+        synchronized(FILE_LOCK){
         StringBuilder out=new StringBuilder("PEUGEOT 308 - LOG DE CAMPO\n");
         out.append("Eventos registrados apenas com o processo do launcher ativo.\n");
         out.append("Sem nomes de músicas, rede Wi-Fi, senha, coordenadas ou endereços.\n\n");
@@ -45,5 +47,6 @@ public final class FieldLog {
             try(BufferedReader r=new BufferedReader(new InputStreamReader(new FileInputStream(file),StandardCharsets.UTF_8))){String line;while((line=r.readLine())!=null)out.append(line).append('\n');}
         }
         return out.toString();
+        }
     }
 }
