@@ -47,11 +47,24 @@ public class MainActivity extends Activity {
     private int lastLogMediaState=-1, lastLogVolume=-1, lastLogAudioRoute=-1;
     private long lastLogHeartbeat=0;
     private void logField(String group, String detail) { if (fieldLog != null) fieldLog.record(group, detail); }
+    // API publica do Android: inventaria saidas disponiveis, nao a rota ativa do Spotify.
+    private int audioOutputDevicesFingerprint() {
+        try {
+            if (android.os.Build.VERSION.SDK_INT < 23 || audio == null) return -1;
+            AudioDeviceInfo[] outputs = audio.getDevices(AudioManager.GET_DEVICES_OUTPUTS);
+            int fingerprint = 1;
+            for (AudioDeviceInfo device : outputs) {
+                fingerprint = 31 * fingerprint + device.getType();
+                fingerprint = 31 * fingerprint + device.getId();
+            }
+            return fingerprint;
+        } catch (Exception ignored) { return -1; }
+    }
     private String audioSnapshot() {
         int vol=-1,max=-1, route=-1; boolean muted=false;
         try { vol=audio.getStreamVolume(AudioManager.STREAM_MUSIC);max=audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC);
-            route=audio.getDevicesForStream(AudioManager.STREAM_MUSIC); muted=audio.isStreamMute(AudioManager.STREAM_MUSIC); } catch(Exception ignored) {}
-        return "volume="+vol+"/"+max+" mute="+muted+" routeFlags="+route+" userMuted="+userMuted;
+            route=audioOutputDevicesFingerprint(); muted=audio.isStreamMute(AudioManager.STREAM_MUSIC); } catch(Exception ignored) {}
+        return "volume="+vol+"/"+max+" mute="+muted+" outputsFingerprint="+route+" userMuted="+userMuted;
     }
     private void logPeriodicHealth() {
         if(fieldLog==null || !fieldLog.isEnabled()) return;
@@ -61,7 +74,7 @@ public class MainActivity extends Activity {
             logField("REDE", "wifiInternet="+wifiConnected+" online="+netOnline+" btAudio="+btConnected);
         }
         int vol=-1,route=-1;
-        try {vol=audio.getStreamVolume(AudioManager.STREAM_MUSIC);route=audio.getDevicesForStream(AudioManager.STREAM_MUSIC);} catch(Exception ignored) {}
+        try {vol=audio.getStreamVolume(AudioManager.STREAM_MUSIC);route=audioOutputDevicesFingerprint();} catch(Exception ignored) {}
         if(vol!=lastLogVolume || route!=lastLogAudioRoute){lastLogVolume=vol;lastLogAudioRoute=route;logField("AUDIO",audioSnapshot());}
         // Uma sessão PLAYING pode continuar atualizando a barra mesmo sem saída de áudio.
         // Somente registra indícios; não manda play/pause nem altera o nível do som.
