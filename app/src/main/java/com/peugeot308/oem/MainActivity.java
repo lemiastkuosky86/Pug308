@@ -4315,61 +4315,146 @@ public class MainActivity extends Activity {
             }
         }
 
-        /** Card panorâmico do 308: apenas renderização; não fabrica estado de portas ou luzes. */
+        /** Silhueta vetorial premium do 308, com informações CAN reais e sem estados artificiais. */
         void drawThirdVehicleVisual(float x, float y, float w, float h) {
             rr(x,y,w,h,16,cSurf2);
             canvas.save();
             canvas.clipRect(x+3,y+3,x+w-3,y+h-3);
-            boolean carOnly = vehicleThirdVisualMode == 2;
-            float carH = Math.max(30f, h-15f);
-            float carW = carH * .46f;
-            float carX = carOnly ? x+(w-carW)*.5f : x+23f;
-            float carY = y+(h-carH)*.5f;
-            // Silhueta hatch vista de cima, proporcional e sem carregar PNG externo.
-            rr(carX,carY,carW,carH,carW*.27f,mix(cSurf2,cText,.19f));
-            rrs(carX,carY,carW,carH,carW*.27f,cMuted,1.1f);
-            rr(carX+carW*.15f,carY+carH*.19f,carW*.70f,carH*.21f,4f,mix(cSurf2,cText,.07f));
-            rr(carX+carW*.13f,carY+carH*.44f,carW*.74f,carH*.24f,4f,mix(cSurf2,cText,.07f));
-            rr(carX+carW*.18f,carY+carH*.79f,carW*.64f,carH*.11f,3f,mix(cSurf2,cText,.06f));
-            ln(carX+1,carY+carH*.42f,carX+carW-1,carY+carH*.42f,cHair,1f);
-            ln(carX+1,carY+carH*.72f,carX+carW-1,carY+carH*.72f,cHair,1f);
-            // Cinza indica desconhecido; nunca usar verde/vermelho sem sinal válido.
-            int unknown=cDim;
-            int[] cabinNow=(hasCanData() && canbusSnapshot!=null)?canbusSnapshot.cabin:null;
-            float rad=Math.max(2f,Math.min(4f,carW*.105f));
-            if (vehicleThirdVisualMode != 3 || (vehicleThirdVisualFlags & 1)!=0) {
-                // Vermelho só com porta efetivamente aberta (1). Cinza = não confirmado.
-                circle(carX-3,carY+carH*.32f,rad,cabinNow!=null&&cabinNow[1]==1?cBad:unknown);
-                circle(carX+carW+3,carY+carH*.32f,rad,cabinNow!=null&&cabinNow[2]==1?cBad:unknown);
-                circle(carX-3,carY+carH*.63f,rad,cabinNow!=null&&cabinNow[3]==1?cBad:unknown);
-                circle(carX+carW+3,carY+carH*.63f,rad,cabinNow!=null&&cabinNow[4]==1?cBad:unknown);
-            }
-            if (vehicleThirdVisualMode != 3 || (vehicleThirdVisualFlags & 2)!=0)
-                circle(carX+carW*.5f,carY+carH*.98f,rad,cabinNow!=null&&cabinNow[5]==1?cBad:unknown);
-            if (vehicleThirdVisualMode != 3 || (vehicleThirdVisualFlags & 8)!=0) {
-                circle(carX+carW*.25f,carY+3,rad*.72f,unknown);
-                circle(carX+carW*.75f,carY+3,rad*.72f,unknown);
-            }
-            if (!carOnly) {
-                float tx=carX+carW+26f;
-                float usable=w-(tx-x)-12f;
-                if (usable>55) {
-                    String[] names={"PORTAS", "PORTA-MALAS", "TRAVAS", "FARÓIS", "SETAS", "FREIO", "TEMP. MOTOR", "COMBUSTÍVEL"};
-                    int visible=0;
-                    for(int j=0;j<8;j++) if(vehicleThirdVisualMode==1 || (vehicleThirdVisualFlags&(1<<j))!=0) visible++;
-                    int rows=Math.max(1,(visible+1)/2);
-                    float rowH=Math.min(17f,(h-11f)/rows);
-                    float font=Math.min(10f,Math.max(7f,rowH*.62f));
-                    int k=0;
-                    for(int j=0;j<8;j++) {
-                        if(vehicleThirdVisualMode==3 && (vehicleThirdVisualFlags&(1<<j))==0) continue;
-                        int col=k%2, row=k/2;
-                        float px=tx+col*usable*.5f, py=y+11f+(row+.5f)*rowH;
-                        circle(px,py-3.2f,2.4f,cDim);
-                        t(fit(names[j],font,tfMed,usable*.5f-19f),px+6,py,font,cMuted,tfMed);
-                        k++;
+            Paint finish=new Paint(Paint.ANTI_ALIAS_FLAG);
+            finish.setShader(new LinearGradient(x,y,x+w,y+h,
+                new int[]{mix(cSurf2,cBg0,.25f),cSurf2,mix(cSurf2,accent,.085f)},
+                null,Shader.TileMode.CLAMP));
+            canvas.drawRoundRect(x+2,y+2,x+w-2,y+h-2,15,15,finish);
+            finish.setShader(null);
+
+            boolean carOnly=vehicleThirdVisualMode==2;
+            boolean live=vehicleDataSource==0 && hasCanData()
+                    && canbusSnapshot!=null && canbusSnapshot.cabin!=null;
+            int[] cabin=live?canbusSnapshot.cabin:null;
+            if(cabin!=null&&cabin.length<17)cabin=null;
+            float carH=Math.min(h-18f,132f);
+            float carW=carH*.47f;
+            float carX=carOnly?x+(w-carW)*.5f:x+17f;
+            float carY=y+(h-carH)*.5f;
+            float cx=carX+carW*.5f;
+
+            // Área iluminada sob o carro, discreta até mesmo no tema claro.
+            finish.setShader(new RadialGradient(cx,carY+carH*.55f,
+                Math.max(carW*.95f,26f),
+                new int[]{mix(cSurf2,accent,.19f),mix(cSurf2,accent,.04f),cSurf2},
+                new float[]{0f,.72f,1f},Shader.TileMode.CLAMP));
+            canvas.drawOval(carX-carW*.52f,carY-5f,carX+carW*1.52f,carY+carH+5f,finish);
+            finish.setShader(null);
+
+            // Rodas, contorno e carroceria em vista superior do 308 hatch.
+            int rubber=0xff171b22;
+            rr(carX-carW*.13f,carY+carH*.22f,carW*.19f,carH*.16f,3,rubber);
+            rr(carX+carW*.94f,carY+carH*.22f,carW*.19f,carH*.16f,3,rubber);
+            rr(carX-carW*.13f,carY+carH*.65f,carW*.19f,carH*.16f,3,rubber);
+            rr(carX+carW*.94f,carY+carH*.65f,carW*.19f,carH*.16f,3,rubber);
+            Path shell=new Path();
+            shell.moveTo(cx,carY);
+            shell.cubicTo(carX+carW*.88f,carY+carH*.02f,carX+carW,carY+carH*.12f,carX+carW,carY+carH*.25f);
+            shell.lineTo(carX+carW,carY+carH*.76f);
+            shell.cubicTo(carX+carW,carY+carH*.93f,carX+carW*.84f,carY+carH, cx,carY+carH);
+            shell.cubicTo(carX+carW*.16f,carY+carH,carX,carY+carH*.93f,carX,carY+carH*.76f);
+            shell.lineTo(carX,carY+carH*.25f);
+            shell.cubicTo(carX,carY+carH*.12f,carX+carW*.12f,carY+carH*.02f,cx,carY);
+            shell.close();
+            finish.setColor(0x55000000);
+            canvas.save();canvas.translate(1.5f,3f);canvas.drawPath(shell,finish);canvas.restore();
+            finish.setShader(new LinearGradient(carX,carY,carX+carW,carY+carH,
+                new int[]{0xffe8edf1,0xff8796a7,0xff495969,0xffb6c3ce},
+                new float[]{0f,.36f,.76f,1f},Shader.TileMode.CLAMP));
+            canvas.drawPath(shell,finish);
+            finish.setShader(null);
+            finish.setStyle(Paint.Style.STROKE);finish.setStrokeWidth(1.3f);finish.setColor(mix(cText,cSurf2,.43f));
+            canvas.drawPath(shell,finish);finish.setStyle(Paint.Style.FILL);
+
+            // Parabrisa, teto panorâmico e vidro traseiro com reflexo.
+            rr(carX+carW*.13f,carY+carH*.18f,carW*.74f,carH*.17f,5,0xff233546);
+            rr(carX+carW*.13f,carY+carH*.39f,carW*.74f,carH*.29f,4,0xff263342);
+            rr(carX+carW*.17f,carY+carH*.73f,carW*.66f,carH*.14f,4,0xff344657);
+            ln(carX+carW*.16f,carY+carH*.19f,carX+carW*.84f,carY+carH*.19f,0x99e3e9f1,1.2f);
+            ln(carX+carW*.17f,carY+carH*.72f,carX+carW*.83f,carY+carH*.72f,0x8899aab8,.9f);
+            ln(carX+carW*.17f,carY+carH*.45f,carX+carW*.83f,carY+carH*.45f,0x558c9aaa,1f);
+            rr(carX+carW*.18f,carY+carH*.025f,carW*.23f,Math.max(2f,carH*.025f),2,0xffd5e3f4);
+            rr(carX+carW*.59f,carY+carH*.025f,carW*.23f,Math.max(2f,carH*.025f),2,0xffd5e3f4);
+            rr(carX+carW*.15f,carY+carH*.95f,carW*.24f,Math.max(2f,carH*.022f),2,0xffad3340);
+            rr(carX+carW*.61f,carY+carH*.95f,carW*.24f,Math.max(2f,carH*.022f),2,0xffad3340);
+
+            int muted=mix(cDim,cSurf2,.38f);
+            float dot=Math.max(2.7f,Math.min(5.2f,carW*.087f));
+            boolean showDoors=vehicleThirdVisualMode!=3 || (vehicleThirdVisualFlags&1)!=0;
+            if(showDoors){
+                for(int i=0;i<4;i++){
+                    int index=i+1;
+                    boolean opened=cabin!=null&&cabin[index]==1;
+                    float yy=carY+carH*(i<2?.32f:.66f);
+                    float xx=i%2==0?carX-5:carX+carW+5;
+                    circle(xx,yy,dot,opened?cBad:muted);
+                    if(opened) {
+                        finish.setStyle(Paint.Style.STROKE);finish.setStrokeWidth(1.5f);
+                        finish.setColor(cBad);canvas.drawCircle(xx,yy,dot+3.3f,finish);
+                        finish.setStyle(Paint.Style.FILL);
                     }
-                    if(visible==0) t("Escolha as informações",tx,y+h*.55f,10,cMuted,tfReg);
+                }
+            }
+            if(vehicleThirdVisualMode!=3||(vehicleThirdVisualFlags&2)!=0){
+                boolean opened=cabin!=null&&cabin[5]==1;
+                circle(cx,carY+carH+3,dot,opened?cBad:muted);
+                if(opened){
+                    finish.setColor(cBad);finish.setStyle(Paint.Style.STROKE);
+                    finish.setStrokeWidth(1.5f);
+                    canvas.drawCircle(cx,carY+carH+3,dot+3,finish);
+                    finish.setStyle(Paint.Style.FILL);
+                }
+            }
+
+            if(!carOnly) {
+                float tx=carX+carW+18f, areaW=x+w-tx-10f;
+                if(areaW>75f){
+                    int titleColor=live?cOk:cDim;
+                    t(live?"DADOS DO VEÍCULO":"AGUARDANDO CANBUS",tx,y+17f,10,titleColor,tfBold);
+                    String[] labels={"PORTAS","PORTA-MALAS","TRAVAS","FARÓIS","SETAS","FREIO","MOTOR","TANQUE"};
+                    String[] vals={"--","--","--","--","--","--","--","--"};
+                    int[] colors={cDim,cDim,cDim,cDim,cDim,cDim,cDim,cDim};
+                    if(cabin!=null){
+                        boolean open=false;for(int i=1;i<=4;i++)if(cabin[i]==1)open=true;
+                        if(open){vals[0]="ABERTA";colors[0]=cBad;}
+                        else if((observedOpenDoors&15)!=0){vals[0]="FECHADAS";colors[0]=cOk;}
+                        if(cabin[5]==1){vals[1]="ABERTO";colors[1]=cBad;}
+                        else if((observedOpenDoors&16)!=0){vals[1]="FECHADO";colors[1]=cOk;}
+                    }
+                    if(live && canbusSnapshot.lights!=null && canbusSnapshot.lights.length>=3){
+                        int[] light=canbusSnapshot.lights;
+                        if(light[0]==1 || light[1]==1 || light[2]==1){
+                            vals[4]="ATIVAS";colors[4]=accent;
+                        }
+                    }
+                    if(hasCanData()&&!"--".equals(vehicleValues[9])){vals[6]=vehicleValues[9]+"°";colors[6]=cText;}
+                    if(hasCanData()&&!"--".equals(vehicleValues[3])){vals[7]=vehicleValues[3]+"%";colors[7]=cText;}
+                    int count=0;
+                    for(int i=0;i<8;i++)if(vehicleThirdVisualMode!=3||(vehicleThirdVisualFlags&(1<<i))!=0)count++;
+                    if(count==0){
+                        t("Selecione os indicadores",tx,y+h*.60f,10,cMuted,tfReg);
+                    }else{
+                        int rows=(count+1)/2;
+                        float top=y+24f, usableH=Math.max(22f,h-28f);
+                        float rowH=usableH/Math.max(1,rows);
+                        float gap=4f,cellW=(areaW-gap)/2f;
+                        int k=0;
+                        for(int i=0;i<8;i++){
+                            if(vehicleThirdVisualMode==3&&(vehicleThirdVisualFlags&(1<<i))==0)continue;
+                            int col=k%2,row=k/2;
+                            float bx=tx+col*(cellW+gap),by=top+row*rowH;
+                            rr(bx,by,cellW,Math.max(12,rowH-2f),5,mix(cSurf2,cBg0,.18f));
+                            float font=Math.max(7f,Math.min(9f,rowH*.42f));
+                            t(fit(labels[i],font,tfMed,cellW-6f),bx+4f,by+rowH*.42f,font,cMuted,tfMed);
+                            t(fit(vals[i],font+1,tfBold,cellW-6f),bx+4f,by+rowH*.80f,font+1,colors[i],tfBold);
+                            k++;
+                        }
+                    }
                 }
             }
             canvas.restore();
