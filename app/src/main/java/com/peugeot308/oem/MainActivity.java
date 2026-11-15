@@ -123,9 +123,10 @@ public class MainActivity extends Activity {
     private long lastHomeInteraction = SystemClock.uptimeMillis();
     // Agendamento independente do redraw: recolhe o dock exatamente após inatividade.
     private final Runnable homeIdleTimeout = () -> {
-        if (immersiveIdle && dashboard != null && !isFinishing() &&
+        // Referência qualificada: o campo Dashboard é declarado adiante na Activity.
+        if (immersiveIdle && MainActivity.this.dashboard != null && !isFinishing() &&
                 SystemClock.uptimeMillis() - lastHomeInteraction >= HOME_IDLE_MS) {
-            dashboard.invalidate();
+            MainActivity.this.dashboard.invalidate();
         }
     };
     private void resetHomeIdleTimer() {
