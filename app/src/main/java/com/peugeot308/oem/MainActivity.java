@@ -2731,126 +2731,123 @@ public class MainActivity extends Activity {
         new AlertDialog.Builder(this).setTitle("Jancar • diagnóstico de áudio")
             .setMessage(detail).setPositiveButton("Fechar", null).show();
     }
-    /** Tela de descanso minimalista. Sem WakeLock: respeita a suspensao da central. */
+    /** Descanso Peugeot OEM conforme referencia: preto, hora, clima, musica e controles. */
     private void openScreenSaver() {
         if (isFinishing() || screenSaverDialog != null) return;
-        final Dialog dlg = new Dialog(this, android.R.style.Theme_Material_NoActionBar_Fullscreen);
-        screenSaverDialog = dlg;
-        final View clock = new View(this) {
-            final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-            final Runnable refresh = new Runnable() {
-                @Override public void run() {
-                    if (screenSaverDialog == dlg && dlg.isShowing()) {
-                        invalidate(); postDelayed(this, 1000L);
+        final Dialog dlg=new Dialog(this,android.R.style.Theme_Material_NoActionBar_Fullscreen);
+        screenSaverDialog=dlg;
+        final View clock=new View(this) {
+            final Paint paint=new Paint(Paint.ANTI_ALIAS_FLAG);
+            final Runnable refresh=new Runnable(){public void run(){
+                if(screenSaverDialog==dlg&&dlg.isShowing()){invalidate();postDelayed(this,1000);}
+            }};
+            @Override protected void onAttachedToWindow(){super.onAttachedToWindow();post(refresh);}
+            @Override protected void onDetachedFromWindow(){removeCallbacks(refresh);super.onDetachedFromWindow();}
+            private String trimText(String value,float width){
+                if(value==null)return "";
+                if(paint.measureText(value)<=width)return value;
+                while(value.length()>1&&paint.measureText(value+"…")>width)value=value.substring(0,value.length()-1);
+                return value+"…";
+            }
+            private void glyph(Canvas c,float x,float y,int code){
+                paint.setStyle(Paint.Style.STROKE);paint.setStrokeWidth(3.3f);
+                paint.setStrokeCap(Paint.Cap.ROUND);paint.setStrokeJoin(Paint.Join.ROUND);
+                paint.setColor(0xffF1F4F6);
+                boolean sun=code==0,partial=code==1||code==2;
+                if(sun||partial){
+                    float sx=partial?x-10:x,sy=partial?y-12:y;
+                    c.drawCircle(sx,sy,sun?14:10,paint);
+                    for(int i=0;i<8;i++){
+                        double a=i*Math.PI/4;
+                        float inner=sun?19:14,outer=sun?25:19;
+                        c.drawLine(sx+(float)Math.cos(a)*inner,sy+(float)Math.sin(a)*inner,
+                                   sx+(float)Math.cos(a)*outer,sy+(float)Math.sin(a)*outer,paint);
                     }
                 }
-            };
-            @Override protected void onAttachedToWindow() {
-                super.onAttachedToWindow(); post(refresh);
+                if(!sun){
+                    Path cloud=new Path();
+                    cloud.moveTo(x-27,y+14);
+                    cloud.cubicTo(x-43,y+6,x-32,y-13,x-17,y-10);
+                    cloud.cubicTo(x-9,y-30,x+22,y-25,x+27,y-8);
+                    cloud.cubicTo(x+49,y-5,x+44,y+18,x+27,y+18);
+                    cloud.lineTo(x-25,y+18);cloud.close();
+                    c.drawPath(cloud,paint);
+                    boolean rain=(code>=51&&code<=67)||(code>=80&&code<=82)||code>=95;
+                    if(rain)for(int i=-1;i<=1;i++)c.drawLine(x+i*19,y+24,x+i*19-6,y+34,paint);
+                }
+                paint.setStyle(Paint.Style.FILL);
             }
-            @Override protected void onDetachedFromWindow() {
-                removeCallbacks(refresh); super.onDetachedFromWindow();
-            }
-            @Override protected void onDraw(Canvas c) {
+            @Override protected void onDraw(Canvas c){
                 super.onDraw(c);
-                float w=getWidth(), h=getHeight();
-                if(w<=0||h<=0)return;
-                // Tela de descanso OEM: preto puro e conteúdo centralizado na base 1280×720.
+                float w=getWidth(),h=getHeight();if(w<=0||h<=0)return;
                 c.drawColor(Color.BLACK);
                 float scale=Math.min(w/1280f,h/720f);
-                c.save();
-                c.translate((w-1280f*scale)/2f,(h-720f*scale)/2f);
-                c.scale(scale,scale);
-                paint.reset();
-                paint.setAntiAlias(true);
-                paint.setStyle(Paint.Style.FILL);
-                paint.setTextAlign(Paint.Align.CENTER);
-
-                // Identidade Peugeot maior, sóbria e com contraste para uso noturno.
-                paint.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL));
-                paint.setTextSize(43f);
-                paint.setLetterSpacing(.10f);
-                paint.setColor(0xffCBD1D8);
-                c.drawText("PEUGEOT 308",640f,145f,paint);
-                paint.setLetterSpacing(0f);
-
-                Calendar now=Calendar.getInstance();
-                Locale loc=new Locale("pt","BR");
-                String hour=new SimpleDateFormat("HH:mm",loc).format(now.getTime());
-                String date=new SimpleDateFormat("EEEE, dd 'de' MMMM",loc)
-                        .format(now.getTime()).toUpperCase(loc);
-                paint.setTypeface(Typeface.create("sans-serif-thin",Typeface.NORMAL));
-                paint.setTextSize(207f);
-                paint.setColor(0xffF3F5F8);
-                while(paint.getTextSize()>150f&&paint.measureText(hour)>1030f)
-                    paint.setTextSize(paint.getTextSize()-2f);
-                c.drawText(hour,640f,396f,paint);
-
-                // Data secundária, menor que na versão anterior.
-                paint.setTypeface(Typeface.create("sans-serif",Typeface.NORMAL));
-                paint.setTextSize(19f);
-                paint.setColor(0xff79848E);
-                while(paint.getTextSize()>15f&&paint.measureText(date)>920f)
-                    paint.setTextSize(paint.getTextSize()-1f);
-                c.drawText(date,640f,448f,paint);
-
-                // Informações reais da sessão musical, sem capa nem controles extras.
-                boolean hasMusic=(mediaCtl!=null||cachedSpotifyPreview)
-                        &&songTitle!=null&&!songTitle.trim().isEmpty()
-                        &&!"Nenhuma música em reprodução".equals(songTitle)
-                        &&!"Spotify".equals(songTitle);
-                String title=hasMusic?songTitle.trim():"Nenhuma música em reprodução";
-                String artist=hasMusic&&songArtist!=null&&!songArtist.trim().isEmpty()
-                        ?songArtist.trim():"";
-                if(!hasMusic)artist="Abra o Spotify para ouvir";
-                paint.setColor(0xff303943);
-                paint.setStrokeWidth(1f);
-                c.drawLine(352f,490f,928f,490f,paint);
-                paint.setTextSize(15f);
-                paint.setColor(0xff657684);
-                paint.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL));
-                c.drawText(hasMusic?(cachedSpotifyPreview&&mediaCtl==null
-                        ?"ÚLTIMA MÚSICA":"TOCANDO AGORA"):"MÚSICA",
-                        640f,528f,paint);
-
-                paint.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL));
-                paint.setColor(0xffEDF0F3);
-                paint.setTextSize(32f);
-                if(paint.measureText(title)>1080f){
-                    int fit=paint.breakText(title,true,1050f,null);
-                    title=title.substring(0,Math.max(1,fit)).trim()+"…";
+                c.save();c.translate((w-1280f*scale)/2,(h-720f*scale)/2);c.scale(scale,scale);
+                paint.reset();paint.setAntiAlias(true);paint.setTextAlign(Paint.Align.CENTER);
+                paint.setColor(0xffF1F2F4);paint.setTypeface(Typeface.create("sans-serif-light",0));
+                paint.setTextSize(34);c.drawText("Peugeot 308",640,94,paint);
+                String hour=new SimpleDateFormat("HH:mm",new Locale("pt","BR"))
+                         .format(Calendar.getInstance().getTime());
+                paint.setTypeface(Typeface.create("sans-serif-thin",0));paint.setTextSize(244);
+                while(paint.getTextSize()>180&&paint.measureText(hour)>1020)paint.setTextSize(paint.getTextSize()-2);
+                paint.setColor(0xffF8F8F9);c.drawText(hour,640,414,paint);
+                String temp=weatherLine!=null&&weatherLine.endsWith("°C")?weatherLine:"--°C";
+                paint.setTypeface(Typeface.create("sans-serif-light",0));paint.setTextSize(42);
+                float group=80+paint.measureText(temp),left=640-group/2;
+                glyph(c,left+30,490,weatherCode);
+                paint.setTextAlign(Paint.Align.LEFT);paint.setColor(0xffF1F2F4);
+                c.drawText(temp,left+80,504,paint);
+                boolean hasTrack=(mediaCtl!=null||cachedSpotifyPreview)&&songTitle!=null
+                      &&!songTitle.trim().isEmpty()&&!"Nenhuma música em reprodução".equals(songTitle)
+                      &&!"Spotify".equals(songTitle);
+                String music=hasTrack?((songArtist==null||songArtist.trim().isEmpty())?
+                        songTitle:(songArtist+"  ·  "+songTitle)):"Nenhuma música em reprodução";
+                paint.setTypeface(Typeface.create("sans-serif-light",0));paint.setTextSize(25);
+                paint.setColor(hasTrack?0xffC9CED4:0xff89939D);
+                c.drawText(trimText(music,700),100,640,paint);
+                paint.setColor(mediaCtl==null?0xff6F7882:0xffF2F3F4);
+                // Ícones anteriores/pausa/próximo: traços vetoriais leves.
+                Path prev=new Path();prev.moveTo(990,622);prev.lineTo(963,639);
+                prev.lineTo(990,656);prev.close();prev.moveTo(965,622);prev.lineTo(938,639);
+                prev.lineTo(965,656);prev.close();c.drawPath(prev,paint);
+                if(mediaPlaying){
+                    c.drawRoundRect(1046,621,1056,657,2,2,paint);
+                    c.drawRoundRect(1073,621,1083,657,2,2,paint);
+                }else{
+                    Path play=new Path();play.moveTo(1044,620);
+                    play.lineTo(1084,639);play.lineTo(1044,658);play.close();c.drawPath(play,paint);
                 }
-                c.drawText(title,640f,575f,paint);
-
-                paint.setTypeface(Typeface.create("sans-serif",Typeface.NORMAL));
-                paint.setColor(0xff9AA6B1);
-                paint.setTextSize(22f);
-                if(paint.measureText(artist)>1060f){
-                    int fit=paint.breakText(artist,true,1035f,null);
-                    artist=artist.substring(0,Math.max(1,fit)).trim()+"…";
-                }
-                c.drawText(artist,640f,613f,paint);
-
-                paint.setTextSize(14f);
-                paint.setColor(0xff515A62);
-                c.drawText("TOQUE PARA VOLTAR",640f,683f,paint);
+                Path next=new Path();next.moveTo(1135,622);next.lineTo(1162,639);
+                next.lineTo(1135,656);next.close();next.moveTo(1160,622);
+                next.lineTo(1187,639);next.lineTo(1160,656);next.close();c.drawPath(next,paint);
                 c.restore();
             }
         };
-        clock.setOnClickListener(v -> dlg.dismiss());
-        dlg.setContentView(clock);
-        dlg.getWindow().setBackgroundDrawableResource(android.R.color.transparent);
-        dlg.getWindow().setFlags(android.view.WindowManager.LayoutParams.FLAG_FULLSCREEN,
-                android.view.WindowManager.LayoutParams.FLAG_FULLSCREEN);
-        dlg.setOnDismissListener(d -> {
-            if (screenSaverDialog == dlg) screenSaverDialog = null;
-            screenSaverDismissedAt = SystemClock.uptimeMillis();
-            resetHomeIdleTimer();
-            logField("TELA_DESCANSO", "fechada");
-            if (dashboard != null) dashboard.invalidate();
+        clock.setOnTouchListener((v,event)->{
+            if(event.getAction()!=MotionEvent.ACTION_UP)return true;
+            float w=v.getWidth(),h=v.getHeight(),scale=Math.min(w/1280f,h/720f);
+            if(scale<=0){dlg.dismiss();return true;}
+            float x=(event.getX()-(w-1280*scale)/2f)/scale;
+            float y=(event.getY()-(h-720*scale)/2f)/scale;
+            if(mediaCtl!=null&&y>=582&&y<=690){
+                if(x>=902&&x<1016){media(KeyEvent.KEYCODE_MEDIA_PREVIOUS);v.invalidate();return true;}
+                if(x>=1016&&x<1115){media(KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE);v.invalidate();return true;}
+                if(x>=1115&&x<=1228){media(KeyEvent.KEYCODE_MEDIA_NEXT);v.invalidate();return true;}
+            }
+            dlg.dismiss();return true;
         });
-        try { dlg.show(); logField("TELA_DESCANSO", "aberta"); }
-        catch (Exception ex) { screenSaverDialog = null; }
+        dlg.setContentView(clock);
+        dlg.getWindow().setBackgroundDrawableResource(android.R.color.black);
+        dlg.getWindow().setFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN,
+                WindowManager.LayoutParams.FLAG_FULLSCREEN);
+        dlg.setOnDismissListener(d->{
+            if(screenSaverDialog==dlg)screenSaverDialog=null;
+            screenSaverDismissedAt=SystemClock.uptimeMillis();
+            resetHomeIdleTimer();logField("TELA_DESCANSO","fechada");
+            if(dashboard!=null)dashboard.invalidate();
+        });
+        try{dlg.show();logField("TELA_DESCANSO","aberta");}
+        catch(Exception ex){screenSaverDialog=null;}
     }
 
     private void settings() { settings(lastSettingsTab); }
