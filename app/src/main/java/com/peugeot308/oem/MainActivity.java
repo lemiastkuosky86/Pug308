@@ -110,6 +110,8 @@ public class MainActivity extends Activity {
     // Tela de descanso v1.51: apenas interface; nao altera som, Wi-Fi ou estado do carro.
     private boolean screenSaverEnabled = true;
     private int screenSaverSeconds = 600;
+    private long radarModeNoticeUntil = 0L;
+    private String radarModeNoticeText = "";
     private Dialog screenSaverDialog;
     private long screenSaverDismissedAt = 0L;
     private static final long HOME_IDLE_MS = 180000L; // três minutos
@@ -1065,16 +1067,16 @@ public class MainActivity extends Activity {
     private void cycleTopMiniCard(int slot) {
         if(slot < 0 || slot >= topSlot.length) return;
         final int[][] routes = {
-            {-4, 6, 11, 0, 7, -1},       // clima, bússola, sinal GPS, velocidade, altitude
-            {-3, -2, 4, 3, 9, 1, -1},   // música, hora, RPM, combustível, motor, autonomia
-            {-2, 0, 7, 12, 13, 14, -1} // relógio, velocidade, altitude, percurso GPS, médias
+            {-4, 6, 11, 0, 7},       // clima, bússola, sinal GPS, velocidade, altitude
+            {-3, -2, 4, 3, 9, 1},   // música, hora, RPM, combustível, motor, autonomia
+            {-2, 0, 7, 12, 13, 14} // relógio, velocidade, altitude, percurso GPS, médias
         };
         int[] route = routes[slot];
         int index = -1;
         for(int i=0;i<route.length;i++) if(route[i] == topSlot[slot]) { index=i;break; }
         int next = route[(index+1)%route.length];
         setTopMiniCard(slot,next);
-        String label = next == -1 ? "Desligado" : next == -4 ? "Clima" : next == -3
+        String label = next == -4 ? "Clima" : next == -3
                 ? "Música" : next == -2 ? "Relógio" : vehicleNames[next];
         snack("Mini-card " + (slot+1) + ": " + label);
     }
@@ -2584,7 +2586,9 @@ public class MainActivity extends Activity {
             else {startGps();syncRadarService();}
             pardalRadar.checkDaily(wifiConnected||netOnline);
         }else{syncRadarService();refreshGpsNeed();}
-        snack("RADAR: "+names[next]);
+        // Aviso contextual integrado à Home; sem Toast do Android.
+        radarModeNoticeText=names[next];
+        radarModeNoticeUntil=SystemClock.uptimeMillis()+2200L;
         if(dashboard!=null)dashboard.invalidate();
     }
 
@@ -4193,9 +4197,7 @@ public class MainActivity extends Activity {
             }
         }
         void drawAnimatedDock(float f) {
-            // Com o painel do veículo oculto (Home compacta), os atalhos
-            // pertencem somente ao layout expandido e nunca são desenhados.
-            if (!vehicleMenuEnabled) return;
+            // Atalhos visíveis com 2 ou 3 cards; só recolhem após 3 minutos.
             // Não deixa atalhos invisíveis capturarem toques após recolher.
             float visible = 1f - homeSmooth(f / .72f);
             if (visible < .003f) return;
@@ -4220,13 +4222,10 @@ public class MainActivity extends Activity {
             if (albumBg && Color.alpha(artCur) > 0) drawArtGlow();
             drawHeader();
             long now = SystemClock.uptimeMillis();
-            // Home de dois cards: usa imediatamente a disposição panorâmica,
-            // com cards altos e sem os atalhos Rádio/Spotify no rodapé.
-            // Na Home completa (veículo ativado), mantém recolhimento automático
-            // opcional após 3 min, como antes.
-            boolean compactHome = !vehicleMenuEnabled;
-            boolean idleTarget = compactHome ||
-                    (immersiveIdle && (now - lastHomeInteraction > HOME_IDLE_MS) && !drivingMode);
+            // Com dois OU três cards, os atalhos aparecem normalmente.
+            // Apenas 3 minutos sem tocar recolhem a Home (quando habilitado).
+            boolean idleTarget = immersiveIdle && !drivingMode &&
+                    (now - lastHomeInteraction >= HOME_IDLE_MS);
             if (idleTarget != lastHomeIdleTarget) {
                 lastHomeIdleTarget = idleTarget;
                 homeIdleTransitionFrom = homeIdleFraction;
@@ -4241,7 +4240,7 @@ public class MainActivity extends Activity {
             if (progress >= 1f && f < .001f) {
                 // Estado normal: desenha diretamente, sem buffers/efeitos desnecessários.
                 drawStandardHome();
-                if (!compactHome) drawDock();
+                drawDock();
             } else if (progress >= 1f && f > .999f) {
                 // Estado recolhido: também sem camadas intermediárias (melhor no RK3326).
                 drawIdleHome();
@@ -4255,7 +4254,8 @@ public class MainActivity extends Activity {
                 drawAnimatedDock(f);
             }
             if (progress < 1f) postInvalidateOnAnimation();
-            drawVolume(); drawAlertPopup(); drawPardalPopup(); // Radar aparece sobre a Home
+            drawVolume(); drawAlertPopup(); drawPardalPopup(); drawRadarModeNotice();
+            // O modo do radar aparece no popup do launcher sem abrir um menu.
             c.restore();
         }
 
@@ -4324,20 +4324,21 @@ public class MainActivity extends Activity {
             }
         }
 
-        // Botão compacto para o topo: ícone e legenda se adaptam ao espaço livre.
+        // Mesmo padrão dos mini-cards: y=10, altura=52, raio=13 e contorno leve.
         void topPill(int id,float x,float w,int kind,String label,boolean active) {
-            boolean pr=hit(id,x,14,w,44);
-            rr(x,14,w,44,12,pr?mix(cSurf2,accent,.24f):cSurf2);
-            // Centraliza o conjunto ícone + texto no botão, sem deslocá-lo à esquerda.
-            float fs = w < 90 ? 12 : 13;
-            float iconSize = w < 72 ? 16 : 19;
-            float gapLabel = 6;
-            String visibleLabel = fit(label, fs, tfMed, Math.max(8, w - iconSize - gapLabel - 12));
-            float labelWidth = measure(visibleLabel, fs, tfMed, 0);
+            boolean pr=hit(id,x,10,w,52);
+            rr(x,10,w,52,13,pr?mix(cSurf2,accent,.24f):cSurf2);
+            rrs(x,10,w,52,13,cHair,1f);
+            // Conjunto ícone + texto centralizado, com a mesma hierarquia dos mini-cards.
+            float fs = w < 77 ? 10 : 11;
+            float iconSize = w < 77 ? 16 : 19;
+            float gapLabel = 5;
+            String visibleLabel = fit(label, fs, tfBold, Math.max(8, w - iconSize - gapLabel - 12));
+            float labelWidth = measure(visibleLabel, fs, tfBold, 0);
             float groupWidth = iconSize + gapLabel + labelWidth;
             float groupX = x + (w - groupWidth)/2f;
             ic(kind, groupX + iconSize/2f, 36, iconSize, active ? accent : cDim);
-            t(visibleLabel, groupX + iconSize + gapLabel, 41, fs, cText, tfMed);
+            t(visibleLabel, groupX + iconSize + gapLabel, 40, fs, cText, tfBold);
         }
 
         void topVolumeKey(int id, float x, float w, int kind, String description, boolean active) {
@@ -4400,8 +4401,9 @@ public class MainActivity extends Activity {
             }
             noHit = false;
             if (drivingMode) {
-                rr(at,14,itemW,44,12,mix(cSurf2,accent,.22f));
-                text("DIR.",at+itemW/2,41,13,cText,tfBold,Paint.Align.CENTER,.02f);
+                rr(at,10,itemW,52,13,mix(cSurf2,accent,.22f));
+                rrs(at,10,itemW,52,13,cHair,1f);
+                text("DIR.",at+itemW/2,40,11,cText,tfBold,Paint.Align.CENTER,.02f);
             } else topPill(6,at,itemW,I_GEAR,"Config",true);
         }
 
@@ -4832,6 +4834,24 @@ public class MainActivity extends Activity {
                 if (isBuiltin && id == 9 && pkg != null) circle(x+w-16,y+17,4.5f,cOk);
                 popPress();
             }
+        }
+
+        /** Confirmação visual de radar usando as mesmas cores, bordas e tipografia do launcher. */
+        void drawRadarModeNotice() {
+            long now=SystemClock.uptimeMillis();
+            if(now>=radarModeNoticeUntil || radarModeNoticeText==null
+                    || radarModeNoticeText.isEmpty()) return;
+            float x=430,y=262,w=420,h=132;
+            boolean off=pardalRadar==null || pardalRadar.mode()==PardalRadar.OFF;
+            int color=off?cDim:accent;
+            rr(x,y,w,h,21,cSurfTop);
+            rrs(x,y,w,h,21,cHair,1.5f);
+            rr(x+20,y+25,6,h-50,3,color);
+            circle(x+64,y+65,26,mix(cSurf2,color,.18f));
+            ic(I_TRIP,x+64,y+65,25,color);
+            t("RADAR PARDAL",x+104,y+51,17,cMuted,tfBold);
+            t(fit(radarModeNoticeText,22,tfBold,w-132),x+104,y+89,22,cText,tfBold);
+            postInvalidateDelayed(Math.min(1000L,radarModeNoticeUntil-now));
         }
 
         void drawPardalPopup(){
