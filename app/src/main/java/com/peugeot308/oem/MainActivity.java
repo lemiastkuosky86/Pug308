@@ -121,6 +121,19 @@ public class MainActivity extends Activity {
     private long homeIdleTransitionAt = SystemClock.uptimeMillis();
     private boolean lastHomeIdleTarget = false;
     private long lastHomeInteraction = SystemClock.uptimeMillis();
+    // Agendamento independente do redraw: recolhe o dock exatamente após inatividade.
+    private final Runnable homeIdleTimeout = () -> {
+        if (immersiveIdle && dashboard != null && !isFinishing() &&
+                SystemClock.uptimeMillis() - lastHomeInteraction >= HOME_IDLE_MS) {
+            dashboard.invalidate();
+        }
+    };
+    private void resetHomeIdleTimer() {
+        lastHomeInteraction = SystemClock.uptimeMillis();
+        handler.removeCallbacks(homeIdleTimeout);
+        if (immersiveIdle) handler.postDelayed(homeIdleTimeout, HOME_IDLE_MS + 30L);
+        if (dashboard != null) dashboard.invalidate();
+    }
     private String lyricsCacheKey = "", lyricsCacheText = "", lyricsCacheSync = "";
     private boolean lyricsLoading = false;
     private Bitmap albumArt;
@@ -788,6 +801,13 @@ public class MainActivity extends Activity {
         for(int tab=0;tab<7;tab++)lastSettingsScroll[tab]=Math.max(0,prefs.getInt("settings_scroll_"+tab,0));
         speedPreferGps = prefs.getBoolean("speed_prefer_gps",true);
         immersiveIdle = prefs.getBoolean("immersive_idle",true);
+        // Restaura uma vez o comportamento aprovado após regressão em versões anteriores.
+        // O usuário continua podendo alterar a opção mais tarde.
+        if (!prefs.getBoolean("home_idle_restored_162", false)) {
+            immersiveIdle = true;
+            prefs.edit().putBoolean("immersive_idle", true)
+                    .putBoolean("home_idle_restored_162", true).apply();
+        }
         screenSaverEnabled = prefs.getBoolean("screensaver_enabled", true);
         screenSaverSeconds = Math.max(600, Math.min(3600, prefs.getInt("screensaver_seconds", 600)));
         topWidgetEnabled = prefs.getBoolean("top_widget", true);
@@ -879,7 +899,7 @@ public class MainActivity extends Activity {
     @Override protected void onResume() {
         super.onResume();
         appForeground = true;
-        lastHomeInteraction = SystemClock.uptimeMillis();
+        resetHomeIdleTimer();
         logField("APP", "resume");
         // Permissão de notificações pode ter sido concedida enquanto a Activity
         // estava pausada; tentar registrar novamente, sem duplicar ouvintes.
@@ -909,6 +929,7 @@ public class MainActivity extends Activity {
         wifiAutoPausedAtElapsed = 0L;
     }
     @Override protected void onPause() {
+        handler.removeCallbacks(homeIdleTimeout);
         if (screenSaverDialog != null) screenSaverDialog.dismiss();
         if (dashboard != null) dashboard.setWeatherAnimationActive(false);
         appForeground = false;
@@ -2805,7 +2826,7 @@ public class MainActivity extends Activity {
         dlg.setOnDismissListener(d -> {
             if (screenSaverDialog == dlg) screenSaverDialog = null;
             screenSaverDismissedAt = SystemClock.uptimeMillis();
-            lastHomeInteraction = screenSaverDismissedAt;
+            resetHomeIdleTimer();
             logField("TELA_DESCANSO", "fechada");
             if (dashboard != null) dashboard.invalidate();
         });
@@ -2896,12 +2917,12 @@ public class MainActivity extends Activity {
                     section(page, "TELA DE DESCANSO", "Relogio em tela cheia; o som continua tocando e um toque retorna a Home.");
                     switchRow(page, "Ativar tela de descanso automatica", screenSaverEnabled, (v,checked)->{
                         screenSaverEnabled=checked; getPreferences(0).edit().putBoolean("screensaver_enabled", checked).apply();
-                        lastHomeInteraction=SystemClock.uptimeMillis();
+                        resetHomeIdleTimer();
                     });
                     stepperRow(page, "Iniciar após", screenSaverSeconds / 60, 10, 60, 5, " min", val->{
                         screenSaverSeconds=val * 60;
                         getPreferences(0).edit().putInt("screensaver_seconds",screenSaverSeconds).apply();
-                        lastHomeInteraction=SystemClock.uptimeMillis();
+                        resetHomeIdleTimer();
                     });
                     LinearLayout saverButtons=new LinearLayout(this);page.addView(saverButtons);
                     actionButton(saverButtons,"Testar tela de descanso",()->{
@@ -2912,7 +2933,7 @@ public class MainActivity extends Activity {
                     divider(page);
                     switchRow(page,"Recolher atalhos após 3 minutos sem tocar",immersiveIdle,(v,checked)->{
                         immersiveIdle=checked;getPreferences(0).edit().putBoolean("immersive_idle",checked).apply();
-                        lastHomeInteraction=SystemClock.uptimeMillis();dashboard.invalidate();
+                        resetHomeIdleTimer();
                     });
                     page.addView(label("Cor do tema: " + PRESET_NAMES[presetIndex], 15, cText, true));
                     LinearLayout titleRow=new LinearLayout(this);page.addView(titleRow);
@@ -5048,7 +5069,7 @@ public class MainActivity extends Activity {
             int act = event.getActionMasked();
             if(act==MotionEvent.ACTION_DOWN) {
                 boolean wasIdle=immersiveIdle && SystemClock.uptimeMillis()-lastHomeInteraction>HOME_IDLE_MS;
-                lastHomeInteraction=SystemClock.uptimeMillis();
+                resetHomeIdleTimer();
                 if(wasIdle && y>555) { pressedId=-1;invalidate();return true; }
             }
             if (SystemClock.uptimeMillis() <= alertUntil) {
