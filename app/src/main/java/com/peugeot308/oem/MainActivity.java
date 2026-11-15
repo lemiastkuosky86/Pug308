@@ -4323,12 +4323,11 @@ public class MainActivity extends Activity {
             p.reset(); p.setAntiAlias(true); p.setTypeface(tf); p.setTextSize(size);
             p.setTextAlign(Paint.Align.LEFT); if (ls != 0) p.setLetterSpacing(ls);
             if (!Float.isNaN(sweepX)) {
-                // Faixa de brilho multicolorida percorrendo o nome sem mudar o tema.
-                // Azul, ciano, roxo, vermelho e âmbar ficam visíveis até no branco.
-                p.setShader(new LinearGradient(sweepX - 95f, 0, sweepX + 95f, 0,
-                        new int[]{base, 0xff248BFF, 0xff11D5FF, 0xff9165FF,
-                                0xffFF3F65, 0xffFF7744, base},
-                        new float[]{0f, .15f, .31f, .48f, .65f, .83f, 1f},
+                // Um único feixe por vez: vermelho, depois branco, depois azul.
+                // O ciclo de cores é escolhido em drawHeader(), nunca simultâneo.
+                p.setShader(new LinearGradient(sweepX - 65f, 0, sweepX + 65f, 0,
+                        new int[]{base, base, hi, base, base},
+                        new float[]{0f, .18f, .50f, .82f, 1f},
                         Shader.TileMode.CLAMP));
             } else p.setColor(base);
             canvas.drawText(s, x, y, p);
@@ -4422,10 +4421,16 @@ public class MainActivity extends Activity {
             while(brandFont>16 && measure(brandTitle,brandFont,tfBold,.025f)>270)brandFont--;
             float wm = measure(brandTitle, brandFont, tfBold, .025f), w308 = 0, gx = 32 + wm;
             long sm = SystemClock.uptimeMillis() % SHINE_PERIOD; // brilho que corre pelo logo a cada poucos segundos
-            // O gradiente começa e termina fora das letras, para atravessar todo o logo.
-            float sweep = sm < SHINE_MS ? 32f - 100f +
-                    (sm / (float) SHINE_MS) * (wm + 200f) : Float.NaN;
-            shineText(brandTitle,32,47,brandFont,cText,accent,tfBold,.025f,sweep);
+            // Cada passagem é de uma única cor: vermelho -> branco -> azul -> repetir.
+            // Um ciclo completo leva três passagens; a cor não muda no meio do texto.
+            int shineStep = (int)((SystemClock.uptimeMillis()/SHINE_PERIOD)%3L);
+            int shineColor = shineStep==0 ? 0xffFF383D :
+                    shineStep==1 ? Color.WHITE : 0xff1988FF;
+            // Letras em prata clara para o feixe branco aparecer também no tema branco/preto.
+            int logoBase = lum(cText)>.72f ? 0xffADB6C2 : cText;
+            float sweep = sm < SHINE_MS ? 32f - 68f +
+                    (sm/(float)SHINE_MS)*(wm+136f) : Float.NaN;
+            shineText(brandTitle,32,47,brandFont,logoBase,shineColor,tfBold,.025f,sweep);
             hit(51, 23, 7, wm + 16, 58); // toque no logotipo abre a tela de descanso
             float dvx = gx + w308 + 14;
             if (topWidgetEnabled) ln(dvx, 22, dvx, 50, cHair, 1.5f);
