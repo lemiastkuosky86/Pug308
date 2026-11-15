@@ -109,7 +109,7 @@ public class MainActivity extends Activity {
     private boolean immersiveIdle = true;
     // Tela de descanso v1.51: apenas interface; nao altera som, Wi-Fi ou estado do carro.
     private boolean screenSaverEnabled = true;
-    private int screenSaverSeconds = 180;
+    private int screenSaverSeconds = 600;
     private Dialog screenSaverDialog;
     private long screenSaverDismissedAt = 0L;
     private static final long HOME_IDLE_MS = 180000L; // três minutos
@@ -727,7 +727,7 @@ public class MainActivity extends Activity {
         updateBase = prefs.getString("server", DEFAULT_SERVER);
         ghRepo = prefs.getString("gh_repo", "lemiastkuosky86/Pug308"); if (ghRepo.trim().isEmpty()) ghRepo = "lemiastkuosky86/Pug308"; updateSource = prefs.getInt("upd_source", 0); autoUpdate = prefs.getBoolean("upd_auto", true); notifiedVersion = prefs.getString("upd_notified", "");
         vehicleMenuEnabled = prefs.getBoolean("vehicle_menu", prefs.getBoolean("vehicle_card", false));
-        vehicleCardCount = Math.max(2, Math.min(3, prefs.getInt("vehicle_cards_count", 3)));
+        vehicleCardCount = Math.max(1, Math.min(3, prefs.getInt("vehicle_cards_count", 3)));
         vehicleThirdVisualMode = Math.max(0, Math.min(3, prefs.getInt("vehicle_third_visual_mode", 1)));
         vehicleThirdVisualFlags = prefs.getInt("vehicle_third_visual_flags", 255) & 255;
         estimatedFuelLPer100 = Math.max(4, Math.min(25, prefs.getInt("fuel_avg_manual", 9)));
@@ -741,7 +741,7 @@ public class MainActivity extends Activity {
         speedPreferGps = prefs.getBoolean("speed_prefer_gps",true);
         immersiveIdle = prefs.getBoolean("immersive_idle",true);
         screenSaverEnabled = prefs.getBoolean("screensaver_enabled", true);
-        screenSaverSeconds = Math.max(60, Math.min(900, prefs.getInt("screensaver_seconds", 180)));
+        screenSaverSeconds = Math.max(600, Math.min(3600, prefs.getInt("screensaver_seconds", 600)));
         topWidgetEnabled = prefs.getBoolean("top_widget", true);
         topBtVisible = prefs.getBoolean("top_show_bt", true);
         topWifiVisible = prefs.getBoolean("top_show_wifi", true);
@@ -984,30 +984,6 @@ public class MainActivity extends Activity {
         return d;
     }
 
-    /** Verifica se o Android/MCU reconhece realmente um controle como dispositivo de entrada HID. */
-    private void showGamepadDiagnostic() {
-        StringBuilder report=new StringBuilder("CONTROLES RECONHECIDOS PELO ANDROID\n\n");
-        int found=0;
-        for(int id:InputDevice.getDeviceIds()) {
-            InputDevice device=InputDevice.getDevice(id);
-            if(device==null)continue;
-            int src=device.getSources();
-            boolean gamepad=(src & InputDevice.SOURCE_GAMEPAD)==InputDevice.SOURCE_GAMEPAD ||
-                    (src & InputDevice.SOURCE_JOYSTICK)==InputDevice.SOURCE_JOYSTICK;
-            if(!gamepad)continue;
-            found++;
-            report.append("• ").append(device.getName()).append("\n")
-                  .append("Fabricante: ").append(device.getVendorId())
-                  .append(" • Produto: ").append(device.getProductId()).append("\n\n");
-        }
-        if(found==0)report.append("Nenhum controle de jogo HID detectado.\n\n")
-                .append("Se o Bluetooth apenas mostra 'Wireless Controller' e não conclui o pareamento, " )
-                .append("tente usar as Configurações Bluetooth do Android, não apenas o aplicativo de telefone da Jancar. " )
-                .append("Como teste alternativo, conecte o DualShock 4 por cabo micro-USB de DADOS à porta USB da central.");
-        else report.append("O Android reconheceu o controle. Confira os comandos no emulador.");
-        new AlertDialog.Builder(this).setTitle("Controle PS4 • diagnóstico")
-                .setMessage(report.toString()).setPositiveButton("Fechar",null).show();
-    }
     private void openConnectionQuickMenu(){
         if(drivingMode){snack("Configure as conexões com o carro parado");return;}
         quickPanel("CONEXÕES • WI-FI + BT",root->{
@@ -1024,8 +1000,6 @@ public class MainActivity extends Activity {
             LinearLayout bt=new LinearLayout(this);root.addView(bt);
             actionButton(bt,"Dispositivos",()->{dismissQuick();openSystemSetting(Settings.ACTION_BLUETOOTH_SETTINGS);});
             actionButton(bt,"Escolher OBD2",()->{dismissQuick();chooseObdAdapter();});
-            LinearLayout gamepad=new LinearLayout(this);root.addView(gamepad);
-            actionButton(gamepad,"Testar controle USB / PS4",()->{dismissQuick();showGamepadDiagnostic();});
             root.addView(label("As ações do sistema podem abrir a tela nativa da Jancar. O launcher não troca sozinho o Bluetooth.",12,cMuted,false));
         });
     }
@@ -1040,8 +1014,8 @@ public class MainActivity extends Activity {
                 topWidgetEnabled=on;getPreferences(0).edit().putBoolean("top_widget",on).apply();
                 refreshGpsNeed();if(dashboard!=null)dashboard.invalidate();
             });
-            choiceRow(root,"Cards do painel",new String[]{"2 cards","3 cards"},vehicleCardCount-2,idx->{
-                vehicleCardCount=idx+2;getPreferences(0).edit().putInt("vehicle_cards_count",vehicleCardCount).apply();dashboard.invalidate();
+            choiceRow(root,"Cards do painel",new String[]{"1 card","2 cards","3 cards"},vehicleCardCount-1,idx->{
+                vehicleCardCount=idx+1;getPreferences(0).edit().putInt("vehicle_cards_count",vehicleCardCount).apply();dashboard.invalidate();
             });
             divider(root);
             section(root,"INDICADORES SUPERIORES","Escolha o que mostrar em cada posição");
@@ -2503,6 +2477,23 @@ public class MainActivity extends Activity {
                 }
             }).setNegativeButton("Fechar",null).show();
     }
+    /** Toque direto no botão do radar: Inteligente -> Visual -> Visual+Áudio -> Desligado. */
+    private void cyclePardalMode(){
+        if(pardalRadar==null)return;
+        int next=(pardalRadar.mode()+1)%4;
+        pardalRadar.setMode(next);
+        String[] names={"Inteligente • áudio acima do limite","Apenas visual",
+                "Visual + áudio","Desligado"};
+        if(next!=PardalRadar.OFF){
+            if(checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)!=PackageManager.PERMISSION_GRANTED)
+                requestPermissions(new String[]{Manifest.permission.ACCESS_FINE_LOCATION},14);
+            else {startGps();syncRadarService();}
+            pardalRadar.checkDaily(wifiConnected||netOnline);
+        }else{syncRadarService();refreshGpsNeed();}
+        snack("RADAR: "+names[next]);
+        if(dashboard!=null)dashboard.invalidate();
+    }
+
     private void openPardalMenu(){
         if(pardalRadar==null)return;
         String[] modes={"Ligado (inteligente: som acima do limite)","Ligado apenas visual",
@@ -2580,23 +2571,47 @@ public class MainActivity extends Activity {
             @Override protected void onDraw(Canvas c) {
                 super.onDraw(c);
                 float w = getWidth(), h = getHeight();
-                c.drawColor(cBg0);
-                Calendar now = Calendar.getInstance();
-                String hour = new SimpleDateFormat("HH:mm", new Locale("pt", "BR")).format(now.getTime());
-                String date = new SimpleDateFormat("EEEE, dd 'de' MMMM", new Locale("pt", "BR")).format(now.getTime());
+                // Tela de descanso inspirada na linguagem automotiva, com contraste suave.
+                paint.setStyle(Paint.Style.FILL);
+                paint.setShader(new android.graphics.LinearGradient(0,0,w,h,
+                    new int[]{0xff07101b,0xff111b2a,0xff070b12},null,
+                    android.graphics.Shader.TileMode.CLAMP));
+                c.drawRect(0,0,w,h,paint);
+                paint.setShader(null);
+                float cx=w*.5f;
+                paint.setColor(0x18ffffff);
+                paint.setStrokeWidth(Math.max(1f,h*.0016f));
+                for(int i=1;i<=4;i++){
+                    float yy=h*(.2f+i*.13f);
+                    c.drawLine(w*.12f,yy,w*.88f,yy,paint);
+                }
                 paint.setTextAlign(Paint.Align.CENTER);
-                paint.setTypeface(Typeface.create("sans-serif-light", Typeface.NORMAL));
-                paint.setTextSize(Math.min(h * .34f, w * .22f));
-                paint.setColor(cText);
-                float baseline = h * .49f - (paint.ascent() + paint.descent()) * .5f;
-                c.drawText(hour, w / 2f, baseline, paint);
-                paint.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
-                paint.setTextSize(Math.min(h * .065f, 36f * getResources().getDisplayMetrics().scaledDensity));
+                paint.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL));
+                paint.setTextSize(Math.min(h*.047f,w*.055f));
                 paint.setColor(accent);
-                c.drawText(date, w / 2f, h * .73f, paint);
-                paint.setTextSize(Math.min(h * .032f, 17f * getResources().getDisplayMetrics().scaledDensity));
-                paint.setColor(cMuted);
-                c.drawText("Toque para voltar", w / 2f, h * .92f, paint);
+                c.drawText("P E U G E O T    3 0 8",cx,h*.17f,paint);
+                Calendar now=Calendar.getInstance();
+                String hour=new SimpleDateFormat("HH:mm",Locale.getDefault()).format(now.getTime());
+                String date=new SimpleDateFormat("EEEE, dd 'de' MMMM",new Locale("pt","BR")).format(now.getTime());
+                paint.setTypeface(Typeface.create("sans-serif-thin",Typeface.NORMAL));
+                paint.setTextSize(Math.min(h*.33f,w*.25f));
+                paint.setColor(0xfff0f3f8);
+                float baseline=h*.47f-(paint.ascent()+paint.descent())*.5f;
+                c.drawText(hour,cx,baseline,paint);
+                paint.setColor(accent);
+                paint.setStrokeWidth(Math.max(3f,h*.007f));
+                c.drawLine(w*.34f,h*.65f,w*.66f,h*.65f,paint);
+                paint.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL));
+                paint.setTextSize(Math.min(h*.057f,34f*getResources().getDisplayMetrics().scaledDensity));
+                paint.setColor(0xffc8d2df);
+                c.drawText(date,cx,h*.74f,paint);
+                paint.setTypeface(Typeface.create("sans-serif",Typeface.NORMAL));
+                paint.setTextSize(Math.min(h*.034f,18f*getResources().getDisplayMetrics().scaledDensity));
+                paint.setColor(0xff78899a);
+                if(mediaPlaying&&!songTitle.isEmpty())c.drawText("♫ "+songTitle,cx,h*.83f,paint);
+                paint.setTextSize(Math.min(h*.026f,15f*getResources().getDisplayMetrics().scaledDensity));
+                paint.setColor(0xff64778a);
+                c.drawText("Toque para voltar",cx,h*.94f,paint);
             }
         };
         clock.setOnClickListener(v -> dlg.dismiss());
@@ -2700,7 +2715,7 @@ public class MainActivity extends Activity {
                         screenSaverEnabled=checked; getPreferences(0).edit().putBoolean("screensaver_enabled", checked).apply();
                         lastHomeInteraction=SystemClock.uptimeMillis();
                     });
-                    stepperRow(page, "Iniciar apos", screenSaverSeconds / 60, 1, 15, 1, " min", val->{
+                    stepperRow(page, "Iniciar após", screenSaverSeconds / 60, 10, 60, 5, " min", val->{
                         screenSaverSeconds=val * 60;
                         getPreferences(0).edit().putInt("screensaver_seconds",screenSaverSeconds).apply();
                         lastHomeInteraction=SystemClock.uptimeMillis();
@@ -2829,9 +2844,9 @@ public class MainActivity extends Activity {
                         if (dashboard != null) dashboard.invalidate();
                     });
                     divider(box);
-                    section(box, "CARDS DO COMPUTADOR DE BORDO", "Escolha 2 ou 3 e o conteúdo de cada um; sem histórico de viagens");
-                    choiceRow(box, "Quantidade de cards", new String[]{"2 cards", "3 cards"}, vehicleCardCount - 2, index -> {
-                        vehicleCardCount = index + 2;
+                    section(box, "CARDS DO COMPUTADOR DE BORDO", "Escolha 1, 2 ou 3 indicadores; sem histórico de viagens");
+                    choiceRow(box, "Quantidade de cards", new String[]{"1 card", "2 cards", "3 cards"}, vehicleCardCount - 1, index -> {
+                        vehicleCardCount = index + 1;
                         getPreferences(0).edit().putInt("vehicle_cards_count", vehicleCardCount).apply();
                         if (dashboard != null) dashboard.invalidate();
                         redraw[0].run();
@@ -2851,7 +2866,7 @@ public class MainActivity extends Activity {
                         });
                     }
                     divider(box);
-                    section(box, "TERCEIRO CARD • ESTADO DO CARRO", "Substitui apenas o conteúdo do terceiro card; sem criar outro card");
+                    section(box, "TERCEIRO CARD • ESTADO DO CARRO", "Para desligá-lo, escolha 1 ou 2 cards acima. Com 3 cards, personalize o terceiro.");
                     choiceRow(box, "Visual do terceiro card", new String[]{"Indicador normal", "Carro + todas informações", "Apenas desenho do carro", "Carro + informações escolhidas"}, vehicleThirdVisualMode, mode -> {
                         vehicleThirdVisualMode = mode;
                         getPreferences(0).edit().putInt("vehicle_third_visual_mode", mode).apply();
@@ -2986,11 +3001,12 @@ public class MainActivity extends Activity {
                     actionButton(testRow, "Testar modo direção (15 s)", () -> { drivingTestUntil = SystemClock.uptimeMillis() + 15000L; updateDrivingMode(); });
                     box.addView(label("Fica ativo ao passar do limite (via GPS) e sai após 6 s parado. Mantém Waze, Rádio, Spotify, Telefone, Casa e Trabalho.", 12, cMuted, false));
                     divider(box);
-                    box.addView(label("Os indicadores do card grande são escolhidos acima em 2 ou 3 posições. As opções dos mini-cards superiores continuam independentes.", 12, cMuted, false));
+                    box.addView(label("O painel pode mostrar 1, 2 ou 3 cards. O terceiro fica desligado com 1 ou 2 cards; os mini-cards superiores são independentes.", 12, cMuted, false));
                     break;
                 }
                 case 4: {
                     section(page, "VELOCIDADE", "Velocímetro GPS e aviso opcional de excesso de velocidade");
+                    actionButton(page, "Radar Pardal • modos e ferramentas", this::openPardalMenu);
                     switchRow(page, "Alerta ao passar do limite de velocidade", speedAlert, (v, checked) -> { saveSpeedWarningMode(checked ? (speedWarningMode == 0 ? 3 : speedWarningMode) : 0); });
                     stepperRow(page, "Limite de velocidade", speedLimit, 30, 220, 10, " km/h", val -> { speedLimit = val; getPreferences(0).edit().putInt("speed_limit", val).apply(); dashboard.invalidate(); });
                     switchRow(page, "Som nos alertas de velocidade", alertSound, (v, checked) -> { alertSound = checked; getPreferences(0).edit().putBoolean("alert_sound", checked).apply(); });
@@ -3043,8 +3059,6 @@ public class MainActivity extends Activity {
                     wifiAutoButtons.setPadding(0, dp(8), 0, 0); page.addView(wifiAutoButtons);
                     actionButton(wifiAutoButtons, "Testar ativação", () -> tryAutoEnableWifi(true));
                     actionButton(wifiAutoButtons, "Abrir Wi-Fi", () -> openSystemSetting(Settings.ACTION_WIFI_SETTINGS));
-                    LinearLayout controllerRow=new LinearLayout(this);page.addView(controllerRow);
-                    actionButton(controllerRow,"Diagnosticar controle PS4 / USB",this::showGamepadDiagnostic);
                     page.addView(label("Caso a central recuse a solicitação, use Abrir Wi-Fi. O diagnóstico detalhado aparece no relatório de sistema; não há tentativas repetidas em segundo plano.", 12, cMuted, false));
                     divider(page);
                     page.addView(label("Peugeot 308 OEM Launcher", 21, cText, true));
@@ -4577,7 +4591,7 @@ public class MainActivity extends Activity {
                 case 46: if (userMuted) toggleMute(); break;
                 case 48: openConnectionQuickMenu(); break;
                 case 49: cycleBrightness(); break;
-                case 50: openPardalMenu(); break;
+                case 50: cyclePardalMode(); break;
                 case 6: if (!drivingMode) settings(); break;
                 case 7: openEq(); break;
                 case 40: openVehicleQuickMenu(); break;
