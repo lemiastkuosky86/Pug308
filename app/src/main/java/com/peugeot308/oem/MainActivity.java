@@ -109,7 +109,7 @@ public class MainActivity extends Activity {
     private boolean immersiveIdle = true;
     // Tela de descanso v1.51: apenas interface; nao altera som, Wi-Fi ou estado do carro.
     private boolean screenSaverEnabled = true;
-    private int screenSaverSeconds = 600;
+    private int screenSaverSeconds = 300;
     private long radarModeNoticeUntil = 0L;
     private String radarModeNoticeText = "";
     private Dialog screenSaverDialog;
@@ -815,7 +815,15 @@ public class MainActivity extends Activity {
                     .putBoolean("home_idle_restored_162", true).apply();
         }
         screenSaverEnabled = prefs.getBoolean("screensaver_enabled", true);
-        screenSaverSeconds = Math.max(600, Math.min(3600, prefs.getInt("screensaver_seconds", 600)));
+        // v1.68: padrão passa de 10 para 5 minutos na atualização.
+        // Valores personalizados acima de 10 minutos permanecem inalterados.
+        int savedSaverSeconds = prefs.getInt("screensaver_seconds", 600);
+        if (!prefs.getBoolean("screensaver_default_migrated_168", false)) {
+            if (savedSaverSeconds == 600) savedSaverSeconds = 300;
+            prefs.edit().putInt("screensaver_seconds", savedSaverSeconds)
+                    .putBoolean("screensaver_default_migrated_168", true).apply();
+        }
+        screenSaverSeconds = Math.max(300, Math.min(3600, savedSaverSeconds));
         topWidgetEnabled = prefs.getBoolean("top_widget", true);
         topBtVisible = prefs.getBoolean("top_show_bt", true);
         topWifiVisible = prefs.getBoolean("top_show_wifi", true);
@@ -2735,95 +2743,164 @@ public class MainActivity extends Activity {
         new AlertDialog.Builder(this).setTitle("Jancar • diagnóstico de áudio")
             .setMessage(detail).setPositiveButton("Fechar", null).show();
     }
-    /** Descanso Peugeot OEM conforme referencia: preto, hora, clima, musica e controles. */
+    /** Tela de descanso OEM: preto puro, relógio, clima e controles de música discretos. */
     private void openScreenSaver() {
         if (isFinishing() || screenSaverDialog != null) return;
         final Dialog dlg=new Dialog(this,android.R.style.Theme_Material_NoActionBar_Fullscreen);
         screenSaverDialog=dlg;
         final View clock=new View(this) {
             final Paint paint=new Paint(Paint.ANTI_ALIAS_FLAG);
-            final Runnable refresh=new Runnable(){public void run(){
-                if(screenSaverDialog==dlg&&dlg.isShowing()){invalidate();postDelayed(this,1000);}
-            }};
-            @Override protected void onAttachedToWindow(){super.onAttachedToWindow();post(refresh);}
-            @Override protected void onDetachedFromWindow(){removeCallbacks(refresh);super.onDetachedFromWindow();}
-            private String trimText(String value,float width){
-                if(value==null)return "";
-                if(paint.measureText(value)<=width)return value;
-                while(value.length()>1&&paint.measureText(value+"…")>width)value=value.substring(0,value.length()-1);
-                return value+"…";
-            }
-            private void glyph(Canvas c,float x,float y,int code){
-                paint.setStyle(Paint.Style.STROKE);paint.setStrokeWidth(3.3f);
-                paint.setStrokeCap(Paint.Cap.ROUND);paint.setStrokeJoin(Paint.Join.ROUND);
-                paint.setColor(0xffF1F4F6);
-                boolean sun=code==0,partial=code==1||code==2;
-                if(sun||partial){
-                    float sx=partial?x-10:x,sy=partial?y-12:y;
-                    c.drawCircle(sx,sy,sun?14:10,paint);
-                    for(int i=0;i<8;i++){
-                        double a=i*Math.PI/4;
-                        float inner=sun?19:14,outer=sun?25:19;
-                        c.drawLine(sx+(float)Math.cos(a)*inner,sy+(float)Math.sin(a)*inner,
-                                   sx+(float)Math.cos(a)*outer,sy+(float)Math.sin(a)*outer,paint);
+            final Runnable refresh=new Runnable() {
+                @Override public void run() {
+                    if(screenSaverDialog==dlg&&dlg.isShowing()){
+                        invalidate();
+                        postDelayed(this,1000L);
                     }
                 }
-                if(!sun){
+            };
+            @Override protected void onAttachedToWindow(){
+                super.onAttachedToWindow();post(refresh);
+            }
+            @Override protected void onDetachedFromWindow(){
+                removeCallbacks(refresh);super.onDetachedFromWindow();
+            }
+            String fitted(String value,float width){
+                String result=value==null?"":value.trim();
+                if(paint.measureText(result)<=width)return result;
+                while(result.length()>1&&paint.measureText(result+"…")>width)
+                    result=result.substring(0,result.length()-1);
+                return result+"…";
+            }
+            // Glifo meteorológico de traço fino, sem animação nem objetos pesados.
+            void weatherGlyph(Canvas c,float x,float y,int code){
+                paint.setStyle(Paint.Style.STROKE);
+                paint.setStrokeWidth(2.7f);
+                paint.setStrokeCap(Paint.Cap.ROUND);
+                paint.setStrokeJoin(Paint.Join.ROUND);
+                paint.setColor(0xffDDE3E8);
+                boolean sunny=code==0,partly=code==1||code==2;
+                if(sunny||partly){
+                    float sx=partly?x-10f:x,sy=partly?y-10f:y;
+                    c.drawCircle(sx,sy,sunny?12f:9f,paint);
+                    for(int i=0;i<8;i++){
+                        double a=i*Math.PI/4.0;
+                        float r1=sunny?16f:12f,r2=sunny?21f:15f;
+                        c.drawLine(sx+(float)Math.cos(a)*r1,sy+(float)Math.sin(a)*r1,
+                                sx+(float)Math.cos(a)*r2,sy+(float)Math.sin(a)*r2,paint);
+                    }
+                }
+                if(!sunny){
                     Path cloud=new Path();
-                    cloud.moveTo(x-27,y+14);
-                    cloud.cubicTo(x-43,y+6,x-32,y-13,x-17,y-10);
-                    cloud.cubicTo(x-9,y-30,x+22,y-25,x+27,y-8);
-                    cloud.cubicTo(x+49,y-5,x+44,y+18,x+27,y+18);
-                    cloud.lineTo(x-25,y+18);cloud.close();
+                    cloud.moveTo(x-21f,y+10f);
+                    cloud.cubicTo(x-33f,y+2f,x-24f,y-12f,x-12f,y-10f);
+                    cloud.cubicTo(x-4f,y-26f,x+20f,y-19f,x+23f,y-5f);
+                    cloud.cubicTo(x+38f,y-3f,x+33f,y+13f,x+21f,y+13f);
+                    cloud.lineTo(x-21f,y+13f);
                     c.drawPath(cloud,paint);
                     boolean rain=(code>=51&&code<=67)||(code>=80&&code<=82)||code>=95;
-                    if(rain)for(int i=-1;i<=1;i++)c.drawLine(x+i*19,y+24,x+i*19-6,y+34,paint);
+                    if(rain)for(int i=-1;i<=1;i++){
+                        float xx=x+i*15f;
+                        c.drawLine(xx,y+18f,xx-4f,y+24f,paint);
+                    }
                 }
                 paint.setStyle(Paint.Style.FILL);
+            }
+            void transport(Canvas c,float x,float cy,int kind,boolean enabled){
+                paint.setColor(enabled?0xffE2E7EC:0xff56616D);
+                paint.setStyle(Paint.Style.FILL);
+                Path symbol=new Path();
+                if(kind==0){ // volume/mudo
+                    symbol.moveTo(x-20,cy-8);symbol.lineTo(x-11,cy-8);
+                    symbol.lineTo(x+1,cy-20);symbol.lineTo(x+1,cy+20);
+                    symbol.lineTo(x-11,cy+8);symbol.lineTo(x-20,cy+8);symbol.close();
+                    c.drawPath(symbol,paint);
+                    boolean muted=userMuted;
+                    try{muted=muted||audio.isStreamMute(AudioManager.STREAM_MUSIC)
+                            ||audio.getStreamVolume(AudioManager.STREAM_MUSIC)==0;}
+                    catch(Exception ignored){}
+                    paint.setStyle(Paint.Style.STROKE);paint.setStrokeWidth(3f);
+                    paint.setStrokeCap(Paint.Cap.ROUND);
+                    if(muted){
+                        paint.setColor(0xffF28A83);
+                        c.drawLine(x+9,cy-11,x+23,cy+11,paint);
+                        c.drawLine(x+23,cy-11,x+9,cy+11,paint);
+                    } else {
+                        c.drawArc(x-8,cy-13,x+26,cy+13,-55,110,false,paint);
+                    }
+                    paint.setStyle(Paint.Style.FILL);
+                }else if(kind==1||kind==3){ // anterior e próxima
+                    float dir=kind==1?-1f:1f;
+                    symbol.moveTo(x-dir*22,cy-12);
+                    symbol.lineTo(x+dir*1,cy);symbol.lineTo(x-dir*22,cy+12);symbol.close();
+                    c.drawPath(symbol,paint);
+                    symbol.reset();
+                    symbol.moveTo(x+dir*1,cy-12);
+                    symbol.lineTo(x+dir*23,cy);symbol.lineTo(x+dir*1,cy+12);symbol.close();
+                    c.drawPath(symbol,paint);
+                }else if(mediaPlaying){
+                    c.drawRoundRect(x-14,cy-17,x-6,cy+17,2,2,paint);
+                    c.drawRoundRect(x+6,cy-17,x+14,cy+17,2,2,paint);
+                }else{
+                    symbol.moveTo(x-13,cy-18);symbol.lineTo(x+17,cy);
+                    symbol.lineTo(x-13,cy+18);symbol.close();c.drawPath(symbol,paint);
+                }
             }
             @Override protected void onDraw(Canvas c){
                 super.onDraw(c);
                 float w=getWidth(),h=getHeight();if(w<=0||h<=0)return;
                 c.drawColor(Color.BLACK);
                 float scale=Math.min(w/1280f,h/720f);
-                c.save();c.translate((w-1280f*scale)/2,(h-720f*scale)/2);c.scale(scale,scale);
-                paint.reset();paint.setAntiAlias(true);paint.setTextAlign(Paint.Align.CENTER);
-                paint.setColor(0xffF1F2F4);paint.setTypeface(Typeface.create("sans-serif-light",0));
-                paint.setTextSize(34);c.drawText("Peugeot 308",640,94,paint);
-                String hour=new SimpleDateFormat("HH:mm",new Locale("pt","BR"))
-                         .format(Calendar.getInstance().getTime());
-                paint.setTypeface(Typeface.create("sans-serif-thin",0));paint.setTextSize(244);
-                while(paint.getTextSize()>180&&paint.measureText(hour)>1020)paint.setTextSize(paint.getTextSize()-2);
-                paint.setColor(0xffF8F8F9);c.drawText(hour,640,414,paint);
-                String temp=weatherLine!=null&&weatherLine.endsWith("°C")?weatherLine:"--°C";
-                paint.setTypeface(Typeface.create("sans-serif-light",0));paint.setTextSize(42);
-                float group=80+paint.measureText(temp),left=640-group/2;
-                glyph(c,left+30,490,weatherCode);
-                paint.setTextAlign(Paint.Align.LEFT);paint.setColor(0xffF1F2F4);
-                c.drawText(temp,left+80,504,paint);
-                boolean hasTrack=(mediaCtl!=null||cachedSpotifyPreview)&&songTitle!=null
-                      &&!songTitle.trim().isEmpty()&&!"Nenhuma música em reprodução".equals(songTitle)
-                      &&!"Spotify".equals(songTitle);
-                String music=hasTrack?((songArtist==null||songArtist.trim().isEmpty())?
-                        songTitle:(songArtist+"  ·  "+songTitle)):"Nenhuma música em reprodução";
-                paint.setTypeface(Typeface.create("sans-serif-light",0));paint.setTextSize(25);
-                paint.setColor(hasTrack?0xffC9CED4:0xff89939D);
-                c.drawText(trimText(music,700),100,640,paint);
-                paint.setColor(mediaCtl==null?0xff6F7882:0xffF2F3F4);
-                // Ícones anteriores/pausa/próximo: traços vetoriais leves.
-                Path prev=new Path();prev.moveTo(990,622);prev.lineTo(963,639);
-                prev.lineTo(990,656);prev.close();prev.moveTo(965,622);prev.lineTo(938,639);
-                prev.lineTo(965,656);prev.close();c.drawPath(prev,paint);
-                if(mediaPlaying){
-                    c.drawRoundRect(1046,621,1056,657,2,2,paint);
-                    c.drawRoundRect(1073,621,1083,657,2,2,paint);
-                }else{
-                    Path play=new Path();play.moveTo(1044,620);
-                    play.lineTo(1084,639);play.lineTo(1044,658);play.close();c.drawPath(play,paint);
-                }
-                Path next=new Path();next.moveTo(1135,622);next.lineTo(1162,639);
-                next.lineTo(1135,656);next.close();next.moveTo(1160,622);
-                next.lineTo(1187,639);next.lineTo(1160,656);next.close();c.drawPath(next,paint);
+                c.save();
+                c.translate((w-1280f*scale)/2,(h-720f*scale)/2);
+                c.scale(scale,scale);
+                paint.reset();paint.setAntiAlias(true);
+                paint.setTextAlign(Paint.Align.CENTER);
+                paint.setTypeface(Typeface.create("sans-serif-light",Typeface.NORMAL));
+                paint.setColor(0xffDDE2E8);
+                paint.setTextSize(33f);
+                c.drawText("Peugeot 308",640f,104f,paint);
+                String time=new SimpleDateFormat("HH:mm",new Locale("pt","BR"))
+                        .format(Calendar.getInstance().getTime());
+                paint.setTypeface(Typeface.create("sans-serif-thin",Typeface.NORMAL));
+                paint.setColor(0xffF5F6F7);
+                paint.setTextSize(250f);
+                while(paint.getTextSize()>185f&&paint.measureText(time)>1010f)
+                    paint.setTextSize(paint.getTextSize()-2f);
+                c.drawText(time,640f,418f,paint);
+
+                boolean hasWeather=weatherLine!=null&&weatherLine.endsWith("°C");
+                String temperature=hasWeather?weatherLine:"--°C";
+                paint.setTypeface(Typeface.create("sans-serif-light",Typeface.NORMAL));
+                paint.setTextSize(41f);paint.setColor(0xffE1E5E9);
+                float textWidth=paint.measureText(temperature);
+                float startX=640f-(textWidth+78f)/2f;
+                weatherGlyph(c,startX+27f,506f,hasWeather?weatherCode:3);
+                paint.setTextAlign(Paint.Align.LEFT);
+                paint.setColor(0xffE1E5E9);paint.setTextSize(41f);
+                c.drawText(temperature,startX+78f,520f,paint);
+
+                // Área musical em duas linhas: título principal e artista menor.
+                boolean known=(mediaCtl!=null||cachedSpotifyPreview)
+                        &&songTitle!=null&&!songTitle.trim().isEmpty()
+                        &&!"Nenhuma música em reprodução".equals(songTitle)
+                        &&!"Spotify".equals(songTitle);
+                String title=known?songTitle:"Nenhuma música em reprodução";
+                String artist=known&&songArtist!=null? songArtist:"";
+                paint.setTextAlign(Paint.Align.LEFT);
+                paint.setColor(known?0xffE1E4E8:0xff919AA4);
+                paint.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL));
+                paint.setTextSize(24f);
+                c.drawText(fitted(title,670f),90f,624f,paint);
+                paint.setTypeface(Typeface.create("sans-serif-light",Typeface.NORMAL));
+                paint.setTextSize(18f);
+                paint.setColor(0xff8C98A3);
+                c.drawText(fitted(artist,670f),90f,656f,paint);
+
+                // Ícones discretos, com áreas de toque amplas e sem fundos ou sombras.
+                transport(c,850f,636f,0,true);
+                transport(c,956f,636f,1,mediaCtl!=null);
+                transport(c,1062f,636f,2,mediaCtl!=null);
+                transport(c,1168f,636f,3,mediaCtl!=null);
                 c.restore();
             }
         };
@@ -2833,10 +2910,13 @@ public class MainActivity extends Activity {
             if(scale<=0){dlg.dismiss();return true;}
             float x=(event.getX()-(w-1280*scale)/2f)/scale;
             float y=(event.getY()-(h-720*scale)/2f)/scale;
-            if(mediaCtl!=null&&y>=582&&y<=690){
-                if(x>=902&&x<1016){media(KeyEvent.KEYCODE_MEDIA_PREVIOUS);v.invalidate();return true;}
-                if(x>=1016&&x<1115){media(KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE);v.invalidate();return true;}
-                if(x>=1115&&x<=1228){media(KeyEvent.KEYCODE_MEDIA_NEXT);v.invalidate();return true;}
+            if(y>=581f&&y<=693f){
+                if(x>=798f&&x<902f){toggleMute();v.invalidate();return true;}
+                if(mediaCtl!=null){
+                    if(x>=902f&&x<1009f){media(KeyEvent.KEYCODE_MEDIA_PREVIOUS);v.invalidate();return true;}
+                    if(x>=1009f&&x<1115f){media(KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE);v.invalidate();return true;}
+                    if(x>=1115f&&x<=1235f){media(KeyEvent.KEYCODE_MEDIA_NEXT);v.invalidate();return true;}
+                }
             }
             dlg.dismiss();return true;
         });
@@ -2939,7 +3019,7 @@ public class MainActivity extends Activity {
                         screenSaverEnabled=checked; getPreferences(0).edit().putBoolean("screensaver_enabled", checked).apply();
                         resetHomeIdleTimer();
                     });
-                    stepperRow(page, "Iniciar após", screenSaverSeconds / 60, 10, 60, 5, " min", val->{
+                    stepperRow(page, "Iniciar após", screenSaverSeconds / 60, 5, 60, 5, " min", val->{
                         screenSaverSeconds=val * 60;
                         getPreferences(0).edit().putInt("screensaver_seconds",screenSaverSeconds).apply();
                         resetHomeIdleTimer();
@@ -2949,7 +3029,7 @@ public class MainActivity extends Activity {
                         if (activeDialog!=null && activeDialog.isShowing()) activeDialog.dismiss();
                         handler.postDelayed(this::openScreenSaver, 250L);
                     });
-                    page.addView(label("Nao abre quando o modo direcao esta ativo. Respeita o standby da central e nao interrompe o Spotify.",12,cMuted,false));
+                    page.addView(label("Padrão: 5 minutos sem tocar. Os atalhos da Home continuam recolhendo após 3 minutos. O Spotify permanece tocando.",12,cMuted,false));
                     divider(page);
                     switchRow(page,"Recolher atalhos após 3 minutos sem tocar",immersiveIdle,(v,checked)->{
                         immersiveIdle=checked;getPreferences(0).edit().putBoolean("immersive_idle",checked).apply();
