@@ -17,8 +17,8 @@ android {
         applicationId 'com.peugeot308.oem'
         minSdk 26
         targetSdk 28
-        versionCode 154
-        versionName '1.54'
+        versionCode 155
+        versionName '1.55'
     }
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
