@@ -452,7 +452,9 @@ public class MainActivity extends Activity {
             gpsLat = l.getLatitude(); gpsLon = l.getLongitude();
             if (weatherAuto) tryAutoWeather();
             if (pardalRadar != null) {
-                if (!RadarForegroundService.isRunning()) pardalRadar.onLocation(l);
+                // Feed GPS também pelo launcher: o serviço pode ter iniciado sem localização.
+                // O cooldown compartilhado evita bipes duplicados.
+                pardalRadar.onLocation(l);
                 if (dashboard != null) dashboard.invalidate();
             }
         }
@@ -2543,6 +2545,7 @@ public class MainActivity extends Activity {
     private void radarTools(){
         if(pardalRadar==null)return;
         String[] tools={"Estado da base e GPS", "Atualizar radares agora (Wi-Fi)",
+                "Testar áudio do radar",
                 pardalRadar.isSimulating()?"Parar simulação":"Simular radar de 350 a 0 m",
                 "Permitir avisos sobre outros aplicativos"};
         new AlertDialog.Builder(this).setTitle("Radar Pardal • Ferramentas")
@@ -2550,7 +2553,10 @@ public class MainActivity extends Activity {
                 switch(which){
                     case 0:
                         new AlertDialog.Builder(this).setTitle("Base Pardal • São Paulo")
-                          .setMessage(pardalRadar.status()+"\nÚltima atualização: "+pardalRadar.lastUpdated()
+                          .setMessage("Modo: "+pardalRadar.modeLabel()
+                            +"\n"+pardalRadar.status()
+                            +"\nRadares carregados: "+pardalRadar.count()
+                            +"\nAtualizada: "+pardalRadar.lastUpdated()
                             +"\n"+pardalRadar.gpsStatus()
                             +"\nServiço ativo: "+RadarForegroundService.isRunning()
                             +"\nSobreposição: "+Settings.canDrawOverlays(this)
@@ -2560,6 +2566,9 @@ public class MainActivity extends Activity {
                         pardalRadar.forceUpdate(wifiConnected||netOnline);
                         snack("Atualização solicitada: "+pardalRadar.status());break;
                     case 2:
+                        snack(pardalRadar.testSound() ? "Teste do radar: áudio enviado" :
+                                "Som indisponível: veja estado e áudio do radar");break;
+                    case 3:
                         if(pardalRadar.isSimulating()){
                             pardalRadar.stopSimulation();snack("Simulação encerrada");
                         }else{
@@ -2567,7 +2576,7 @@ public class MainActivity extends Activity {
                             snack("Simulação de radar: 350 m até 0 m, velocidade de teste 80 km/h");
                         }
                         if(dashboard!=null)dashboard.invalidate();break;
-                    case 3: radarOverlayPermission();break;
+                    case 4: radarOverlayPermission();break;
                 }
             }).setNegativeButton("Fechar",null).show();
     }
@@ -4977,7 +4986,14 @@ public class MainActivity extends Activity {
                 case MotionEvent.ACTION_DOWN: {
                     Hit h = hitAt(x, y); pressedId = h == null ? -1 : h.id; lpFired = false; cancelLp();
                     downX=x;downY=y;downAt=SystemClock.uptimeMillis();
-                    if (h != null && h.id == 49) {
+                    if (h != null && h.id == 50) {
+                        // Pressão longa no Radar: abre modos, status, atualização e teste de som.
+                        lpTask = () -> {
+                            lpTask = null; lpFired = true; pressedId = -1;
+                            invalidate(); feedback(); openPardalMenu();
+                        };
+                        handler.postDelayed(lpTask, 750L);
+                    } else if (h != null && h.id == 49) {
                         // Pressão de 0,75 segundo; ao soltar não executa o toque rápido também.
                         lpTask = () -> {
                             lpTask = null; lpFired = true; pressedId = -1;
@@ -4999,7 +5015,7 @@ public class MainActivity extends Activity {
                 }
                 case MotionEvent.ACTION_MOVE: { if (pressedId != -1) {
                     // Tolerância a movimentos leves do dedo durante a pressão longa do botão Brilho.
-                    if(pressedId==49 && Math.hypot(x-downX,y-downY)<32) break;
+                    if((pressedId==49||pressedId==50) && Math.hypot(x-downX,y-downY)<32) break;
                     Hit h = hitAt(x, y); if (h == null || h.id != pressedId) { pressedId = -1; cancelLp(); invalidate(); }
                 } break; }
                 case MotionEvent.ACTION_CANCEL: { pressedId = -1; cancelLp(); invalidate(); break; }
