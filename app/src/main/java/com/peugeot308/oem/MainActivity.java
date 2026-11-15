@@ -285,6 +285,8 @@ public class MainActivity extends Activity {
     // A Jancar ainda não fornece protocolo CANBUS conhecido. Nunca indicar conectado sem telemetria válida.
     // Fontes de telemetria: 0 = Jancar CANBOX, 1 = adaptador ELM327 Bluetooth pareado.
     private int vehicleDataSource = 0;
+    // Aba interna de Veículo: Geral, Painel, Mini cards, Conexões, Avançado.
+    private int vehicleSettingsSection = 0;
     private String obdAddress = "";
     private ObdBluetoothReader obdReader;
     private boolean obdLive = false;
@@ -3051,8 +3053,23 @@ public class MainActivity extends Activity {
                     break;
                 }
                 case 3: {
-                    section(page, "VEÍCULO E PAINEL", "Escolha o que aparece na tela inicial");
-                    LinearLayout box = page;
+                    section(page, "VEÍCULO", "Configurações organizadas por assunto • sem alterar dados do carro");
+                    LinearLayout box=page;
+                    LinearLayout subNav=new LinearLayout(this);
+                    subNav.setGravity(Gravity.CENTER_VERTICAL);
+                    page.addView(subNav,new LinearLayout.LayoutParams(-1,dp(52)));
+                    final String[] subNames={"Geral","Painel","Mini cards","Conexões","Avançado"};
+                    for(int ni=0;ni<subNames.length;ni++){
+                        final int next=ni;
+                        actionButton(subNav,(vehicleSettingsSection==ni?"• ":"")+subNames[ni],()->{
+                            if(vehicleSettingsSection==next)return;
+                            vehicleSettingsSection=next;
+                            redraw[0].run();
+                            pageScroll.post(()->pageScroll.scrollTo(0,0));
+                        });
+                    }
+                    divider(box);
+                    if(vehicleSettingsSection==0){
                     section(box, "PAINEL NA TELA INICIAL", "Ative ou oculte o card grande do computador de bordo");
                     switchRow(box, "Mostrar card grande do veículo", vehicleMenuEnabled, (v, checked) -> {
                         vehicleMenuEnabled = checked; getPreferences(0).edit().putBoolean("vehicle_menu", checked).apply();
@@ -3064,6 +3081,20 @@ public class MainActivity extends Activity {
                         if (dashboard != null) dashboard.invalidate();
                     });
                     divider(box);
+                    box.addView(label("FONTE: "+(vehicleDataSource==0?"CANBOX Jancar":"OBD2 Bluetooth")
+                            +"   •   "+(hasCanData()?"DADOS RECEBIDOS":"SEM TELEMETRIA VALIDADA")
+                            +"   •   GPS: "+(gpsFresh()?"OK":"SEM SINAL"),
+                            14,hasCanData()?cOk:cMuted,true));
+                    LinearLayout goTo=new LinearLayout(this);box.addView(goTo,new LinearLayout.LayoutParams(-1,dp(54)));
+                    actionButton(goTo,"Personalizar painel",()->{
+                        vehicleSettingsSection=1;redraw[0].run();
+                        pageScroll.post(()->pageScroll.scrollTo(0,0));
+                    });
+                    actionButton(goTo,"Ver conexão CAN/OBD",()->{
+                        vehicleSettingsSection=3;redraw[0].run();
+                        pageScroll.post(()->pageScroll.scrollTo(0,0));
+                    });
+                    } else if(vehicleSettingsSection==1){
                     section(box, "CARDS DO COMPUTADOR DE BORDO", "Escolha 1, 2 ou 3 indicadores; sem histórico de viagens");
                     choiceRow(box, "Quantidade de cards", new String[]{"1 card", "2 cards", "3 cards"}, vehicleCardCount - 1, index -> {
                         vehicleCardCount = index + 1;
@@ -3086,13 +3117,8 @@ public class MainActivity extends Activity {
                         });
                     }
                     divider(box);
-                    section(box, "TERCEIRO CARD • ESTADO DO CARRO", "Pode ocultar o terceiro card; a opção de apenas 1 card continua acima.");
-                    switchRow(box, "Exibir terceiro card", vehicleCardCount == 3, (v, enabled) -> {
-                        vehicleCardCount = enabled ? 3 : Math.min(vehicleCardCount, 2);
-                        getPreferences(0).edit().putInt("vehicle_cards_count", vehicleCardCount).apply();
-                        if (dashboard != null) dashboard.invalidate();
-                        redraw[0].run();
-                    });
+                    section(box, "TERCEIRO CARD", "Aparece somente quando a quantidade selecionada é 3.");
+                    if (vehicleCardCount == 3) {
                     choiceRow(box, "Visual do terceiro card", new String[]{"Indicador normal", "Carro + todas informações", "Apenas desenho do carro", "Carro + informações escolhidas"}, vehicleThirdVisualMode, mode -> {
                         vehicleThirdVisualMode = mode;
                         getPreferences(0).edit().putInt("vehicle_third_visual_mode", mode).apply();
@@ -3110,6 +3136,9 @@ public class MainActivity extends Activity {
                             });
                         }
                     }
+                    } else {
+                        box.addView(label("Escolha 3 cards acima para personalizar o desenho do carro.", 12, cMuted, false));
+                    }
                     box.addView(label("Indicadores sem sinal CANBUS confirmado ficam cinza (--). O painel nunca presume que uma porta está fechada ou travada.", 12, cMuted, false));
                     box.addView(label("Km rodados, média, máxima e altitude usam GPS. O percurso não é salvo e pode ficar incompleto se o Android interromper a localização em segundo plano.", 12, cMuted, false));
                     stepperRow(box, "Consumo médio manual (L/100km)", estimatedFuelLPer100, 4, 25, 1, "", value -> {
@@ -3126,6 +3155,37 @@ public class MainActivity extends Activity {
                         .setPositiveButton("Zerar", (dialog, which) -> { resetGpsTrip(); snack("Percurso GPS zerado"); })
                         .show());
                     divider(box);
+                    } else if(vehicleSettingsSection==2){
+                    section(box,"MINI CARDS DO TOPO","Toque nos mini cards da Home para alternar; aqui você escolhe o que pode aparecer.");
+                    box.addView(label("Mini cards no topo (ao lado do 308)", 14, accent, true));
+                    switchRow(box, "Mostrar mini cards no topo", topWidgetEnabled, (v, checked) -> {
+                        topWidgetEnabled = checked; getPreferences(0).edit().putBoolean("top_widget", checked).apply(); refreshGpsNeed();
+                    });
+                    box.addView(label("Cada mini card pode ser desligado separadamente. Com os três em Desligado, nenhum card aparece no topo.", 12, cMuted, false));
+                    String[] topOpts = topMiniChoices();
+                    for (int si = 0; si < topSlot.length; si++) {
+                        final int slot = si;
+                        choiceRow(box, "Card " + (si + 1), topOpts, topMiniIndex(topSlot[si]), idx -> setTopMiniCard(slot,topMiniFromIndex(idx)));
+                    }
+                    LinearLayout clearCardsRow = new LinearLayout(this);
+                    box.addView(clearCardsRow, new LinearLayout.LayoutParams(-1, dp(49)));
+                    actionButton(clearCardsRow, "Desligar os 3 mini cards", () -> {
+                        android.content.SharedPreferences.Editor editor = getPreferences(0).edit();
+                        for (int i = 0; i < topSlot.length; i++) { topSlot[i] = -1; editor.putInt("top_slot_" + i, -1); }
+                        editor.apply(); dashboard.invalidate(); redraw[0].run();
+                    });
+                    box.addView(label("Temperatura/RPM/consumo dependem do CANBUS ou OBD2; sem dados válidos mostra --.", 12, cMuted, false));
+                    box.addView(label("Toque no card VELOCIDADE na tela inicial para definir limite, alerta visual, sonoro ou somente leitura. O vermelho e a piscada de 15% dependem do modo visual.", 12, cMuted, false));
+                    stepperRow(box, "Limite de velocidade do mini card", speedLimit, 30, 220, 5, " km/h", val -> {
+                        speedLimit = val; getPreferences(0).edit().putInt("speed_limit", val).apply(); dashboard.invalidate();
+                    });
+                    switchRow(box,"Priorizar GPS para mostrar velocidade",speedPreferGps,(v,checked)->{
+                        speedPreferGps=checked;getPreferences(0).edit().putBoolean("speed_prefer_gps",checked).apply();refreshGpsNeed();dashboard.invalidate();
+                    });
+                    divider(box);
+                    box.addView(label("O painel pode mostrar 1, 2 ou 3 cards. O terceiro fica desligado com 1 ou 2 cards; os mini-cards superiores são independentes.", 12, cMuted, false));
+                    } else if(vehicleSettingsSection==3){
+                    section(box,"CONEXÕES E DIAGNÓSTICO","Escolha CANBOX ou OBD2. Sem dados reais os indicadores exibem --.");
                     box.addView(label((vehicleDataSource==1 ? "OBD2: " : "CANBUS: ") + (hasCanData() ? "CONECTADO" : "SEM DADOS") + "     GPS: " + (gpsFresh() ? "SINAL OK" : "SEM SINAL"), 15, hasCanData() || gpsFresh() ? cOk : cMuted, true));
                     divider(box);
                     section(box,"FONTE DE DADOS DO CARRO","Escolha entre a CANBOX original ou um leitor OBD2 Bluetooth pareado");
@@ -3172,6 +3232,8 @@ public class MainActivity extends Activity {
                     actionButton(jancarActions, "Rádio original", () -> openJancarApp(false));
                     box.addView(label("Rádio e volante continuam pelo sistema original até que os contratos da MCU/CAN sejam confirmados.", 12, cMuted, false));
                     divider(box);
+                    } else {
+                    section(box,"FUNÇÕES AVANÇADAS","Atalhos de broadcast para integração externa; não enviam comandos à MCU.");
                     section(box, "CONTROLES ORIGINAIS DO VEÍCULO", "Botões ainda sem comando MCU confirmado");
                     divider(box);
                     box.addView(label("Botões do carro (ex.: rádio RT4) — segure o botão na tela para renomear", 14, accent, true));
@@ -3191,33 +3253,7 @@ public class MainActivity extends Activity {
                     box.addView(actRow);
                     box.addView(label("Sem CANBUS, os botões só emitem o broadcast ao sistema; nada chega ao carro (veja o README).", 12, cMuted, false));
                     divider(box);
-                    box.addView(label("Mini cards no topo (ao lado do 308)", 14, accent, true));
-                    switchRow(box, "Mostrar mini cards no topo", topWidgetEnabled, (v, checked) -> {
-                        topWidgetEnabled = checked; getPreferences(0).edit().putBoolean("top_widget", checked).apply(); refreshGpsNeed();
-                    });
-                    box.addView(label("Cada mini card pode ser desligado separadamente. Com os três em Desligado, nenhum card aparece no topo.", 12, cMuted, false));
-                    String[] topOpts = topMiniChoices();
-                    for (int si = 0; si < topSlot.length; si++) {
-                        final int slot = si;
-                        choiceRow(box, "Card " + (si + 1), topOpts, topMiniIndex(topSlot[si]), idx -> setTopMiniCard(slot,topMiniFromIndex(idx)));
                     }
-                    LinearLayout clearCardsRow = new LinearLayout(this);
-                    box.addView(clearCardsRow, new LinearLayout.LayoutParams(-1, dp(49)));
-                    actionButton(clearCardsRow, "Desligar os 3 mini cards", () -> {
-                        android.content.SharedPreferences.Editor editor = getPreferences(0).edit();
-                        for (int i = 0; i < topSlot.length; i++) { topSlot[i] = -1; editor.putInt("top_slot_" + i, -1); }
-                        editor.apply(); dashboard.invalidate(); redraw[0].run();
-                    });
-                    box.addView(label("Temperatura/RPM/consumo dependem do CANBUS ou OBD2; sem dados válidos mostra --.", 12, cMuted, false));
-                    box.addView(label("Toque no card VELOCIDADE na tela inicial para definir limite, alerta visual, sonoro ou somente leitura. O vermelho e a piscada de 15% dependem do modo visual.", 12, cMuted, false));
-                    stepperRow(box, "Limite de velocidade do mini card", speedLimit, 30, 220, 5, " km/h", val -> {
-                        speedLimit = val; getPreferences(0).edit().putInt("speed_limit", val).apply(); dashboard.invalidate();
-                    });
-                    switchRow(box,"Priorizar GPS para mostrar velocidade",speedPreferGps,(v,checked)->{
-                        speedPreferGps=checked;getPreferences(0).edit().putBoolean("speed_prefer_gps",checked).apply();refreshGpsNeed();dashboard.invalidate();
-                    });
-                    divider(box);
-                    box.addView(label("O painel pode mostrar 1, 2 ou 3 cards. O terceiro fica desligado com 1 ou 2 cards; os mini-cards superiores são independentes.", 12, cMuted, false));
                     break;
                 }
                 case 4: {
