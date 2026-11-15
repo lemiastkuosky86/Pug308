@@ -2752,36 +2752,53 @@ public class MainActivity extends Activity {
         final float homeScreenBrightness=getWindow().getAttributes().screenBrightness;
         final View clock=new View(this) {
             final Paint paint=new Paint(Paint.ANTI_ALIAS_FLAG);
-            // Céu fixo, criado uma vez. Nunca gera objetos a cada frame.
-            final long skyStartedAt=SystemClock.uptimeMillis();
+            // Céu noturno simples: poucos pontos, sem bitmap/blur/threads.
+            // Intervalos, trajetórias e brilho são independentes e aleatórios.
+            final java.util.Random skyRandom=new java.util.Random(
+                    SystemClock.uptimeMillis() ^ 308172L);
             final float[][] skyStars=createSkyStars();
+            long cometStartMs=-1L, nextCometMs=SystemClock.uptimeMillis()
+                    +4500L+skyRandom.nextInt(9500);
+            long cometDurationMs=1700L;
+            float cometX,cometY,cometDX,cometDY;
             float[][] createSkyStars(){
-                float[][] stars=new float[36][4];
-                java.util.Random random=new java.util.Random(308171L);
+                float[][] stars=new float[36][6];
                 int index=0;
                 while(index<stars.length){
-                    float x=40f+random.nextFloat()*1200f;
-                    float y=42f+random.nextFloat()*500f;
-                    // O relógio, logo e faixa musical permanecem livres.
+                    float x=40f+skyRandom.nextFloat()*1200f;
+                    float y=42f+skyRandom.nextFloat()*500f;
+                    // Não colocar estrelas sobre relógio, logo, clima ou música.
                     if((y<170f&&x>440f&&x<840f)
                             ||(y>=170f&&x>225f&&x<1050f))continue;
                     stars[index][0]=x;
                     stars[index][1]=y;
-                    stars[index][2]=.6f+random.nextFloat()*.7f;
-                    stars[index][3]=50f+random.nextInt(52);
+                    stars[index][2]=.6f+skyRandom.nextFloat()*.7f;
+                    stars[index][3]=40f+skyRandom.nextInt(72);
+                    stars[index][4]=skyRandom.nextFloat()*6.283185f;
+                    stars[index][5]=.45f+skyRandom.nextFloat()*1.1f;
                     index++;
                 }
                 return stars;
+            }
+            void beginComet(long now){
+                int lane=skyRandom.nextInt(4);
+                float shift=skyRandom.nextFloat()*21f;
+                if(lane==0){cometX=1280f;cometY=150f+shift;cometDX=-390f;cometDY=37f;}
+                else if(lane==1){cometX=0f;cometY=150f+shift;cometDX=390f;cometDY=37f;}
+                else if(lane==2){cometX=1280f;cometY=472f+shift;cometDX=-340f;cometDY=-24f;}
+                else{cometX=0f;cometY=472f+shift;cometDX=340f;cometDY=-24f;}
+                cometDurationMs=1400L+skyRandom.nextInt(800);
+                cometStartMs=now;
             }
             final Runnable refresh=new Runnable() {
                 @Override public void run() {
                     if(screenSaverDialog==dlg&&dlg.isShowing()){
                         invalidate();
-                        long phase=(SystemClock.uptimeMillis()-skyStartedAt)%36000L;
-                        // Só atualiza rapidamente durante o cometa (1,7 s a cada 36 s).
-                        long delay=(phase>=3000L&&phase<4700L)?90L
-                                :(phase<3000L?Math.min(1000L,3000L-phase):1000L);
-                        postDelayed(this,Math.max(50L,delay));
+                        long now=SystemClock.uptimeMillis();
+                        // 90 ms somente durante a passagem do cometa.
+                        long delay=cometStartMs>=0L?90L:
+                                Math.min(950L,Math.max(90L,nextCometMs-now));
+                        postDelayed(this,delay);
                     }
                 }
             };
@@ -2883,7 +2900,7 @@ public class MainActivity extends Activity {
                 c.translate((w-1280f*scale)/2f,(h-720f*scale)/2f);
                 c.scale(scale,scale);
 
-                // Fundo preto puro preservado; apenas pontos e cometa discretos.
+                // Preto puro preservado. Estrelas aparecem/apagam suavemente.
                 paint.reset();
                 paint.setAntiAlias(true);
                 long skyNow=SystemClock.uptimeMillis();
@@ -2891,28 +2908,33 @@ public class MainActivity extends Activity {
                 paint.setColor(0xffA9BBD0);
                 for(int i=0;i<skyStars.length;i++){
                     float[] star=skyStars[i];
-                    int alpha=(int)(star[3]+12f*Math.sin(skyNow/2400.0+i*1.4));
-                    paint.setAlpha(Math.max(30,Math.min(115,alpha)));
+                    float blink=(float)(.5+.5*Math.sin(
+                            skyNow/1000.0*star[5]+star[4]));
+                    paint.setAlpha((int)(5f+star[3]*blink*blink));
                     c.drawCircle(star[0],star[1],star[2],paint);
                 }
-                long skyElapsed=skyNow-skyStartedAt;
-                long cometPhase=skyElapsed%36000L;
-                if(cometPhase>=3000L&&cometPhase<4700L){
-                    float t=(cometPhase-3000f)/1700f;
-                    float fade=Math.min(1f,Math.min(t*7f,(1f-t)*7f));
-                    boolean right=(skyElapsed/36000L)%2L==0L;
-                    float px=right?1190f-310f*t:90f+310f*t;
-                    float py=right?155f+55f*t:165f+55f*t;
-                    float tailX=right?px+54f:px-54f;
-                    paint.setStyle(Paint.Style.STROKE);
-                    paint.setStrokeCap(Paint.Cap.ROUND);
-                    paint.setStrokeWidth(1.6f);
-                    paint.setColor(0xffBCD4EB);
-                    paint.setAlpha((int)(70f*fade));
-                    c.drawLine(tailX,py-19f,px,py,paint);
-                    paint.setStyle(Paint.Style.FILL);
-                    paint.setAlpha((int)(150f*fade));
-                    c.drawCircle(px,py,1.8f,paint);
+                if(cometStartMs<0L&&skyNow>=nextCometMs)beginComet(skyNow);
+                if(cometStartMs>=0L){
+                    float t=(skyNow-cometStartMs)/(float)cometDurationMs;
+                    if(t>=1f){
+                        cometStartMs=-1L;
+                        nextCometMs=skyNow+9500L+skyRandom.nextInt(15500);
+                    }else{
+                        float fade=Math.min(1f,Math.min(t*6f,(1f-t)*6f));
+                        float px=cometX+cometDX*t,py=cometY+cometDY*t;
+                        float length=(float)Math.sqrt(cometDX*cometDX+cometDY*cometDY);
+                        float tailX=px-cometDX/length*48f;
+                        float tailY=py-cometDY/length*48f;
+                        paint.setStyle(Paint.Style.STROKE);
+                        paint.setStrokeCap(Paint.Cap.ROUND);
+                        paint.setStrokeWidth(1.5f);
+                        paint.setColor(0xffBCD4EB);
+                        paint.setAlpha((int)(82f*fade));
+                        c.drawLine(tailX,tailY,px,py,paint);
+                        paint.setStyle(Paint.Style.FILL);
+                        paint.setAlpha((int)(145f*fade));
+                        c.drawCircle(px,py,1.8f,paint);
+                    }
                 }
                 paint.setAlpha(255);
 
