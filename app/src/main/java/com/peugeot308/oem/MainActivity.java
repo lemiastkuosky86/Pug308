@@ -2748,13 +2748,40 @@ public class MainActivity extends Activity {
         if (isFinishing() || screenSaverDialog != null) return;
         final Dialog dlg=new Dialog(this,android.R.style.Theme_Material_NoActionBar_Fullscreen);
         screenSaverDialog=dlg;
+        // Herdar exatamente o brilho da janela anterior (inclusive o modo sistema).
+        final float homeScreenBrightness=getWindow().getAttributes().screenBrightness;
         final View clock=new View(this) {
             final Paint paint=new Paint(Paint.ANTI_ALIAS_FLAG);
+            // Céu fixo, criado uma vez. Nunca gera objetos a cada frame.
+            final long skyStartedAt=SystemClock.uptimeMillis();
+            final float[][] skyStars=createSkyStars();
+            float[][] createSkyStars(){
+                float[][] stars=new float[36][4];
+                java.util.Random random=new java.util.Random(308171L);
+                int index=0;
+                while(index<stars.length){
+                    float x=40f+random.nextFloat()*1200f;
+                    float y=42f+random.nextFloat()*500f;
+                    // O relógio, logo e faixa musical permanecem livres.
+                    if((y<170f&&x>440f&&x<840f)
+                            ||(y>=170f&&x>225f&&x<1050f))continue;
+                    stars[index][0]=x;
+                    stars[index][1]=y;
+                    stars[index][2]=.6f+random.nextFloat()*.7f;
+                    stars[index][3]=50f+random.nextInt(52);
+                    index++;
+                }
+                return stars;
+            }
             final Runnable refresh=new Runnable() {
                 @Override public void run() {
                     if(screenSaverDialog==dlg&&dlg.isShowing()){
                         invalidate();
-                        postDelayed(this,1000L);
+                        long phase=(SystemClock.uptimeMillis()-skyStartedAt)%36000L;
+                        // Só atualiza rapidamente durante o cometa (1,7 s a cada 36 s).
+                        long delay=(phase>=3000L&&phase<4700L)?90L
+                                :(phase<3000L?Math.min(1000L,3000L-phase):1000L);
+                        postDelayed(this,Math.max(50L,delay));
                     }
                 }
             };
@@ -2856,10 +2883,38 @@ public class MainActivity extends Activity {
                 c.translate((w-1280f*scale)/2f,(h-720f*scale)/2f);
                 c.scale(scale,scale);
 
-                // Fundo preto puro para uso noturno. Sem degradê nem iluminação.
-                // Preserve todos os elementos, tipografia, barras e controles.
+                // Fundo preto puro preservado; apenas pontos e cometa discretos.
                 paint.reset();
                 paint.setAntiAlias(true);
+                long skyNow=SystemClock.uptimeMillis();
+                paint.setStyle(Paint.Style.FILL);
+                paint.setColor(0xffA9BBD0);
+                for(int i=0;i<skyStars.length;i++){
+                    float[] star=skyStars[i];
+                    int alpha=(int)(star[3]+12f*Math.sin(skyNow/2400.0+i*1.4));
+                    paint.setAlpha(Math.max(30,Math.min(115,alpha)));
+                    c.drawCircle(star[0],star[1],star[2],paint);
+                }
+                long skyElapsed=skyNow-skyStartedAt;
+                long cometPhase=skyElapsed%36000L;
+                if(cometPhase>=3000L&&cometPhase<4700L){
+                    float t=(cometPhase-3000f)/1700f;
+                    float fade=Math.min(1f,Math.min(t*7f,(1f-t)*7f));
+                    boolean right=(skyElapsed/36000L)%2L==0L;
+                    float px=right?1190f-310f*t:90f+310f*t;
+                    float py=right?155f+55f*t:165f+55f*t;
+                    float tailX=right?px+54f:px-54f;
+                    paint.setStyle(Paint.Style.STROKE);
+                    paint.setStrokeCap(Paint.Cap.ROUND);
+                    paint.setStrokeWidth(1.6f);
+                    paint.setColor(0xffBCD4EB);
+                    paint.setAlpha((int)(70f*fade));
+                    c.drawLine(tailX,py-19f,px,py,paint);
+                    paint.setStyle(Paint.Style.FILL);
+                    paint.setAlpha((int)(150f*fade));
+                    c.drawCircle(px,py,1.8f,paint);
+                }
+                paint.setAlpha(255);
 
                 // Logo tipografico em duas espessuras, centralizado pelo tamanho real.
                 paint.setStyle(Paint.Style.FILL);
@@ -2963,6 +3018,11 @@ public class MainActivity extends Activity {
         dlg.getWindow().setBackgroundDrawableResource(android.R.color.black);
         dlg.getWindow().setFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN,
                 WindowManager.LayoutParams.FLAG_FULLSCREEN);
+        // Theme_Material_NoActionBar_Fullscreen não herda o brilho da Activity.
+        // Aplicar antes de mostrar evita o clarão ao entrar no descanso.
+        WindowManager.LayoutParams saverAttrs=dlg.getWindow().getAttributes();
+        saverAttrs.screenBrightness=homeScreenBrightness;
+        dlg.getWindow().setAttributes(saverAttrs);
         dlg.setOnDismissListener(d->{
             if(screenSaverDialog==dlg)screenSaverDialog=null;
             screenSaverDismissedAt=SystemClock.uptimeMillis();
