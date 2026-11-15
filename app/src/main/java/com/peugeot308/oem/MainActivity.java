@@ -226,7 +226,7 @@ public class MainActivity extends Activity {
     private Dialog quickDialog; // Diálogo rápido; correção do erro de compilação v1.44
     private SoundEngine snd;      // v1.14: motor de som (equalizador, loudness, volume por velocidade)
     private Dialog eqDialog;
-    private final int[] topSlot = {0, 4, 9}; // mini cards do topo: id do indicador (-1 = vazio)
+    private final int[] topSlot = {0, 4, 9}; // indicadores do topo; -1 desligado, -2 relógio, -3 mídia, -4 clima
     // Visibilidade dos atalhos da barra superior (não altera o estado real de Wi-Fi/BT).
     private boolean topBtVisible = true, topWifiVisible = true;
     private boolean topPcVisible = true, topEqVisible = true, topVolumeVisible = true;
@@ -763,7 +763,7 @@ public class MainActivity extends Activity {
         speedWarningMode = Math.max(0, Math.min(3, prefs.getInt("speed_warning_mode", speedAlert ? 3 : 1)));
         speedAlert = speedWarningMode != 0;
         int[] defSlots = {0, 4, 9};
-        for (int i = 0; i < topSlot.length; i++) topSlot[i] = Math.max(-1, Math.min(vehicleNames.length - 1, prefs.getInt("top_slot_" + i, defSlots[i])));
+        for (int i = 0; i < topSlot.length; i++) topSlot[i] = Math.max(-4, Math.min(vehicleNames.length - 1, prefs.getInt("top_slot_" + i, defSlots[i])));
         alertSound = prefs.getBoolean("alert_sound", true);
         vehicleAction = prefs.getString("vehicle_action", DEFAULT_VEHICLE_ACTION);
         for (int i = 0; i < 3; i++) { vbtnLabel[i] = prefs.getString("vbtn_label_" + i, vbtnLabel[i]); vbtnCmd[i] = prefs.getString("vbtn_cmd_" + i, vbtnCmd[i]); }
@@ -1039,6 +1039,45 @@ public class MainActivity extends Activity {
         return d;
     }
 
+    // Tipos especiais: -1 oculto, -2 relógio, -3 mídia e -4 clima.
+    // As opções de toque mantêm poucos estados úteis para não exigir vários toques dirigindo.
+    private String[] topMiniChoices() {
+        String[] choices = new String[vehicleNames.length + 4];
+        choices[0] = "Desligado";
+        choices[1] = "Clima";
+        choices[2] = "Música";
+        choices[3] = "Relógio";
+        System.arraycopy(vehicleNames, 0, choices, 4, vehicleNames.length);
+        return choices;
+    }
+    private int topMiniIndex(int slot) {
+        return slot == -1 ? 0 : slot == -4 ? 1 : slot == -3 ? 2 : slot == -2 ? 3 : slot + 4;
+    }
+    private int topMiniFromIndex(int index) {
+        return index == 0 ? -1 : index == 1 ? -4 : index == 2 ? -3 : index == 3 ? -2 : index - 4;
+    }
+    private void setTopMiniCard(int slot, int value) {
+        if(slot < 0 || slot >= topSlot.length) return;
+        topSlot[slot] = value;
+        getPreferences(0).edit().putInt("top_slot_" + slot, value).apply();
+        if(dashboard != null) dashboard.invalidate();
+    }
+    private void cycleTopMiniCard(int slot) {
+        if(slot < 0 || slot >= topSlot.length) return;
+        final int[][] routes = {
+            {-4, 6, 11, 0, 7, -1},       // clima, bússola, sinal GPS, velocidade, altitude
+            {-3, -2, 4, 3, 9, 1, -1},   // música, hora, RPM, combustível, motor, autonomia
+            {-2, 0, 7, 12, 13, 14, -1} // relógio, velocidade, altitude, percurso GPS, médias
+        };
+        int[] route = routes[slot];
+        int index = -1;
+        for(int i=0;i<route.length;i++) if(route[i] == topSlot[slot]) { index=i;break; }
+        int next = route[(index+1)%route.length];
+        setTopMiniCard(slot,next);
+        String label = next == -1 ? "Desligado" : next == -4 ? "Clima" : next == -3
+                ? "Música" : next == -2 ? "Relógio" : vehicleNames[next];
+        snack("Mini-card " + (slot+1) + ": " + label);
+    }
     private void openConnectionQuickMenu(){
         if(drivingMode){snack("Configure as conexões com o carro parado");return;}
         quickPanel("CONEXÕES • WI-FI + BT",root->{
@@ -1074,12 +1113,11 @@ public class MainActivity extends Activity {
             });
             divider(root);
             section(root,"INDICADORES SUPERIORES","Escolha o que mostrar em cada posição");
-            String[] list=new String[vehicleNames.length+1];list[0]="Desligado";
-            System.arraycopy(vehicleNames,0,list,1,vehicleNames.length);
+            String[] list=topMiniChoices();
             for(int i=0;i<3;i++){
                 final int pos=i;
-                choiceRow(root,"Mini-card "+(i+1),list,topSlot[i]+1,idx->{
-                    topSlot[pos]=idx-1;getPreferences(0).edit().putInt("top_slot_"+pos,topSlot[pos]).apply();dashboard.invalidate();
+                choiceRow(root,"Mini-card "+(i+1),list,topMiniIndex(topSlot[i]),idx->{
+                    setTopMiniCard(pos,topMiniFromIndex(idx));
                 });
             }
             section(root,"CARDS DO PAINEL","Personalize as posições do PC de bordo");
@@ -3026,11 +3064,10 @@ public class MainActivity extends Activity {
                         topWidgetEnabled = checked; getPreferences(0).edit().putBoolean("top_widget", checked).apply(); refreshGpsNeed();
                     });
                     box.addView(label("Cada mini card pode ser desligado separadamente. Com os três em Desligado, nenhum card aparece no topo.", 12, cMuted, false));
-                    String[] topOpts = new String[vehicleNames.length + 1]; topOpts[0] = "Desligado (não mostrar)";
-                    for (int oi = 0; oi < vehicleNames.length; oi++) topOpts[oi + 1] = vehicleNames[oi];
+                    String[] topOpts = topMiniChoices();
                     for (int si = 0; si < topSlot.length; si++) {
                         final int slot = si;
-                        choiceRow(box, "Card " + (si + 1), topOpts, topSlot[si] + 1, idx -> { topSlot[slot] = idx - 1; getPreferences(0).edit().putInt("top_slot_" + slot, topSlot[slot]).apply(); dashboard.invalidate(); });
+                        choiceRow(box, "Card " + (si + 1), topOpts, topMiniIndex(topSlot[si]), idx -> setTopMiniCard(slot,topMiniFromIndex(idx)));
                     }
                     LinearLayout clearCardsRow = new LinearLayout(this);
                     box.addView(clearCardsRow, new LinearLayout.LayoutParams(-1, dp(49)));
@@ -4194,41 +4231,59 @@ public class MainActivity extends Activity {
         }
         void drawTopWidget(float startX) {
             if (!topWidgetEnabled) return;
-            ArrayList<Integer> ids = new ArrayList<>();
-            for (int sl : topSlot) if (sl >= 0 && sl < vehicleNames.length) ids.add(sl);
-            if (ids.isEmpty()) return;
-            // Mini-cards são distribuídos proporcionalmente dentro da faixa reservada.
-            // 1 card: centralizado e um pouco mais largo; 2/3: larguras iguais.
+            ArrayList<Integer> positions = new ArrayList<>();
+            for (int j = 0; j < topSlot.length; j++) {
+                int item = topSlot[j];
+                if (item >= -4 && item != -1 && item < vehicleNames.length) positions.add(j);
+            }
+            if (positions.isEmpty()) return;
             float gap = 8, available = Math.max(0, 596 - startX);
-            float w = Math.min(ids.size() == 1 ? 180 : ids.size() == 2 ? 158 : 122,
-                    (available - gap * (ids.size() - 1)) / ids.size());
+            float w = Math.min(positions.size() == 1 ? 180 : positions.size() == 2 ? 158 : 122,
+                    (available - gap * (positions.size() - 1)) / positions.size());
             if (w < 70) return;
-            float firstX = startX + Math.max(0, (available - (w * ids.size() + gap * (ids.size() - 1))) / 2f);
+            float firstX = startX + Math.max(0, (available - (w * positions.size() + gap * (positions.size() - 1))) / 2f);
             float spd = speedNow();
-            // Pisca somente com velocidade válida e acima de 115% do limite configurado.
             boolean critical = speedVisualOn() && spd >= 0 && spd > speedLimit * 1.15f;
             boolean flashOn = (SystemClock.uptimeMillis() / 450L) % 2L == 0L;
-            for (int i = 0; i < ids.size(); i++) {
-                int id = ids.get(i); float x = firstX + i * (w + gap), y = 10, h = 52;
-                // O toque é associado à posição REAL do card, inclusive quando outros estão desligados.
-                if (id == 0) hit(45, x, y, w, h);
-                String val = vehicleValue(id); boolean live = val != null;
-                // Apenas o indicador de velocidade atual reage; o indicador 'Limite' não pisca.
+            for (int i = 0; i < positions.size(); i++) {
+                int slot = positions.get(i), id = topSlot[slot];
+                float x = firstX + i * (w + gap), y = 10, h = 52;
+                // O identificador corresponde ao slot salvo, não à posição na tela.
+                hit(60 + slot, x, y, w, h);
+                String title, val, unit;
+                if (id == -4) {
+                    title = "CLIMA"; val = weatherLine != null && weatherLine.contains("°") ? weatherLine : null; unit = "";
+                } else if (id == -3) {
+                    title = "MÚSICA";
+                    val = (mediaCtl != null || cachedSpotifyPreview) && songTitle != null && !songTitle.isEmpty()
+                            ? songTitle : null;
+                    unit = "";
+                } else if (id == -2) {
+                    title = "RELÓGIO";
+                    val = new SimpleDateFormat("HH:mm", new Locale("pt", "BR")).format(new java.util.Date());
+                    unit = "";
+                } else {
+                    title = vehicleShort[id]; val = vehicleValue(id); unit = vehicleUnits[id];
+                }
+                boolean live = val != null && !val.trim().isEmpty();
                 boolean over = speedVisualOn() && id == 0 && live && spd > speedLimit;
                 boolean flashing = over && critical && flashOn;
                 int cardBg = flashing ? cBad : (over ? mix(cSurf2, cBad, .34f) : cSurf2);
                 int titleColor = flashing ? Color.WHITE : (over ? cBad : cDim);
                 int valueColor = flashing ? Color.WHITE : (over ? cBad : (live ? cText : cDim));
                 rr(x, y, w, h, 12, cardBg);
-                // Título e valor centralizados, inclusive quando há somente um mini-card.
-                text(fit(vehicleShort[id], 10, tfBold, w - 12), x + w/2f, y + 17, 10, titleColor, tfBold, Paint.Align.CENTER, .06f);
-                String u = vehicleUnits[id], shown = live ? val : "--";
-                float uw = u.isEmpty() ? 0 : measure(u, 12, tfReg, 0) + 4, vs = 22;
-                while (vs > 14 && measure(shown, vs, tfBold, 0) + uw > w - 18) vs -= 2;
+                text(fit(title, 10, tfBold, w - 12), x + w / 2f, y + 17, 10, titleColor, tfBold, Paint.Align.CENTER, .06f);
+                String shown = live ? val : "--";
+                float uw = unit.isEmpty() ? 0 : measure(unit, 12, tfReg, 0) + 4, vs = 22;
+                // Texto das músicas ocupa mais espaço: reduzimos a fonte, nunca extrapola a borda.
+                if (id == -3) vs = 15;
+                while (vs > 12 && measure(shown, vs, tfBold, 0) + uw > w - 18) vs -= 1;
+                shown = fit(shown, vs, tfBold, Math.max(8, w - 18 - uw));
                 float tw = measure(shown, vs, tfBold, 0) + uw;
-                float valueX = x + (w - tw)/2f;
+                float valueX = x + (w - tw) / 2f;
                 t(shown, valueX, y + 43, vs, valueColor, tfBold);
-                if (!u.isEmpty()) t(u, valueX + measure(shown, vs, tfBold, 0) + 4, y + 43, 12, flashing ? Color.WHITE : cDim, tfReg);
+                if (!unit.isEmpty()) t(unit, valueX + measure(shown, vs, tfBold, 0) + 4,
+                        y + 43, 12, flashing ? Color.WHITE : cDim, tfReg);
             }
         }
 
@@ -4262,6 +4317,7 @@ public class MainActivity extends Activity {
             long sm = SystemClock.uptimeMillis() % SHINE_PERIOD; // brilho que corre pelo logo a cada poucos segundos
             float sweep = sm < SHINE_MS ? 10 + (sm / (float) SHINE_MS) * (wm + w308 + 70) : Float.NaN;
             shineText(brandTitle, 32, 47, brandFont, cText, accent, tfBold, .025f, sweep);
+            hit(51, 23, 7, wm + 16, 58); // toque no logotipo abre a tela de descanso
             float dvx = gx + w308 + 14;
             if (topWidgetEnabled) ln(dvx, 22, dvx, 50, cHair, 1.5f);
             drawTopWidget(dvx + 14);
@@ -4272,7 +4328,7 @@ public class MainActivity extends Activity {
                 ln(598, 20, 598, 52, cHair, 1.5f);
                 topVolumeKey(1, 604, 58, I_MINUS, "Diminuir volume", false);
                 topVolumeKey(2, 676, 58, I_PLUS, "Aumentar volume", false);
-                topVolumeKey(3, 748, 58, I_MUTE, "Alternar mudo", isMuted());
+                topVolumeKey(3, 748, 58, isMuted() ? I_MUTE : I_SPEAKER, "Alternar mudo", isMuted());
                 ln(818, 20, 818, 52, cHair, 1.5f);
             }
             // Até quatro atalhos opcionais + Config, com largura proporcional.
@@ -4839,6 +4895,8 @@ public class MainActivity extends Activity {
                 case 48: openConnectionQuickMenu(); break;
                 case 49: cycleBrightness(); break;
                 case 50: cyclePardalMode(); break;
+                case 51: openScreenSaver(); break;
+                case 60: case 61: case 62: cycleTopMiniCard(id - 60); break;
                 case 6: if (!drivingMode) settings(); break;
                 case 7: openEq(); break;
                 case 40: openVehicleQuickMenu(); break;
@@ -4895,6 +4953,12 @@ public class MainActivity extends Activity {
                             invalidate(); feedback(); openBrightnessQuickMenu();
                         };
                         handler.postDelayed(lpTask, 750L);
+                    } else if (h != null && h.id >= 60 && h.id <= 62
+                            && topSlot[h.id-60] == 0) {
+                        // Segurar o mini-card Velocidade mantém acesso aos alertas/limite.
+                        lpTask = () -> { lpTask=null; lpFired=true; pressedId=-1;
+                            invalidate(); feedback(); openSpeedCardMenu(); };
+                        handler.postDelayed(lpTask, 700L);
                     } else if (h != null && h.id >= 40 && h.id <= 42) { // segurar o botão do carro: renomear
                         final int idx = h.id - 40;
                         lpTask = () -> { lpTask = null; lpFired = true; pressedId = -1; invalidate(); feedback(); editVehicleButton(idx, null); };
