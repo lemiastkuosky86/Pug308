@@ -312,22 +312,45 @@ final class PardalRadar {
     void onLocation(Location loc){
         if(simulating)return;
         if(mode==OFF){current=null;distance=-1;return;}
-        if(loc==null||!loc.hasAccuracy()||loc.getAccuracy()>35||!loc.hasBearing()
-                ||!loc.hasSpeed()||loc.getSpeed()<2.8f
-                ||System.currentTimeMillis()-loc.getTime()>10000L){
+        if(loc==null){current=null;distance=-1;gpsReason="Aguardando GPS";return;}
+
+        long ageMs=loc.getElapsedRealtimeNanos()>0 ?
+                (SystemClock.elapsedRealtimeNanos()-loc.getElapsedRealtimeNanos())/1_000_000L : 0L;
+        boolean oldFix=ageMs>14000L;
+        if(!loc.hasAccuracy()||loc.getAccuracy()>60f||oldFix){
             current=null;distance=-1;
-            if(loc==null)gpsReason="Aguardando GPS";
-            else if(!loc.hasAccuracy()||loc.getAccuracy()>35)
-                gpsReason="GPS impreciso"+(loc.hasAccuracy()?" ±"+Math.round(loc.getAccuracy())+" m":"");
-            else if(!loc.hasBearing()||!loc.hasSpeed()||loc.getSpeed()<2.8f)
-                gpsReason="GPS: aguardando rumo e movimento";
-            else gpsReason="GPS: posição antiga";
-            if(loc!=null&&loc.hasAccuracy())accuracy=loc.getAccuracy();
+            accuracy=loc.hasAccuracy()?loc.getAccuracy():-1f;
+            gpsReason=oldFix?"GPS: posição antiga":
+                    "GPS impreciso"+(loc.hasAccuracy()?" ±"+Math.round(loc.getAccuracy())+" m":"");
             return;
         }
-        gpsReason="GPS estável";
-        accuracy=loc.getAccuracy();fixAt=SystemClock.elapsedRealtime();speed=loc.getSpeed()*3.6f;
-        Camera best=null;float nearest=351f;
+        accuracy=loc.getAccuracy();
+        Location previous=lastBearingFix;
+        lastBearingFix=new Location(loc);
+        float bearing=loc.hasBearing()?loc.getBearing():Float.NaN;
+        float movingSpeed=loc.hasSpeed()?loc.getSpeed():0f;
+        if(previous!=null){
+            long dt=loc.getElapsedRealtimeNanos()-previous.getElapsedRealtimeNanos();
+            float elapsed=dt/1_000_000_000f;
+            float traveled=previous.distanceTo(loc);
+            // Algumas centrais não informam heading/speed embora enviem GPS válido.
+            // Só estima rumo quando há deslocamento real, sem inventar posição.
+            if(elapsed>.4f&&elapsed<12f&&traveled>12f&&traveled<160f){
+                if(Float.isNaN(bearing))bearing=previous.bearingTo(loc);
+                if(!loc.hasSpeed())movingSpeed=traveled/elapsed;
+            }
+        }
+        if(Float.isNaN(bearing)||movingSpeed<2f){
+            current=null;distance=-1;fixAt=SystemClock.elapsedRealtime();
+            speed=movingSpeed*3.6f;
+            gpsReason="GPS: aguardando movimento e rumo";
+            return;
+        }
+        gpsReason=cameras.isEmpty()?"Base de radares vazia: atualize via Wi-Fi":"GPS estável";
+        fixAt=SystemClock.elapsedRealtime();
+        speed=movingSpeed*3.6f;
+        Camera best=null;
+        float nearest=351f;
         float[] result=new float[2];
         int latCell=cell(loc.getLatitude()),lonCell=cell(loc.getLongitude());
         Map<Long,List<Camera>> index=cells;
@@ -337,16 +360,18 @@ final class PardalRadar {
             for(Camera c:nearby){
                 Location.distanceBetween(loc.getLatitude(),loc.getLongitude(),c.lat,c.lon,result);
                 float d=result[0];
-                if(d>=nearest||!RadarGeo.candidate(d,loc.getBearing(),result[1],loc.getAccuracy(),c.direction))continue;
+                if(d>=nearest||!RadarGeo.candidate(d,bearing,result[1],loc.getAccuracy(),c.direction))
+                    continue;
                 best=c;nearest=d;
             }
         }
-        String key=best==null?"":best.key();
-        if(!key.equals(lastLoggedCamera)){
-            lastLoggedCamera=key;
+        String bestKey=best==null?"":best.key();
+        if(!bestKey.equals(lastLoggedCamera)){
+            lastLoggedCamera=bestKey;
             if(best!=null)log("aproximacao kind="+best.kind+" limite="+best.limit+" distancia="+Math.round(nearest)+"m");
         }
-        current=best;distance=best==null?-1:Math.round(nearest);
+        current=best;
+        distance=best==null?-1:Math.round(nearest);
         if(best!=null)beepIfNeeded(best);
         if(SystemClock.elapsedRealtime()-lastGpsLog>60000L){
             lastGpsLog=SystemClock.elapsedRealtime();
@@ -368,13 +393,21 @@ final class PardalRadar {
         if(now-lastSound<gap)return;
         lastSound=now;
         try{
-            int volume=speeding?(distance<=50?80:distance<=100?72:distance<=200?64:55):50;
+            // Na multimídia Jancar o canal de notificações pode estar em zero.
+            // O canal de MÍDIA é o mesmo usado para reprodução normal do aparelho.
+            int volume=speeding?(distance<=50?95:distance<=100?92:distance<=200?88:82):76;
             if(tone==null||toneVolume!=volume){
-                stopTone();tone=new ToneGenerator(AudioManager.STREAM_NOTIFICATION,volume);toneVolume=volume;
+                stopTone();tone=new ToneGenerator(AudioManager.STREAM_MUSIC,volume);toneVolume=volume;
             }
-            tone.startTone(speeding?ToneGenerator.TONE_PROP_BEEP2:ToneGenerator.TONE_PROP_BEEP,110);
-            log("bipe distancia="+distance+"m acima_limite="+speeding);
-        }catch(Exception e){log("audio_falha="+e.getClass().getSimpleName());}
+            boolean sent=tone.startTone(speeding?ToneGenerator.TONE_PROP_BEEP2:
+                    ToneGenerator.TONE_PROP_BEEP,190);
+            if(!sent)lastAudioError="Sistema não iniciou o som";
+            else lastAudioError="";
+            log("bipe enviado="+sent+" distancia="+distance+"m acima_limite="+speeding);
+        }catch(Exception e){
+            lastAudioError=e.getClass().getSimpleName();
+            log("audio_falha="+lastAudioError);
+        }
     }
     private void stopTone(){if(tone!=null){tone.stopTone();tone.release();tone=null;}toneVolume=-1;}
     void close(){stopSimulation();stopTone();}
