@@ -20,6 +20,9 @@ final class PardalRadar {
     static final int SMART=0, VISUAL=1, BOTH=2, OFF=3;
     static final String URL="https://github.com/Murkiriel/pardal/releases/latest/download/pardal-SP.zip";
     private static final String CATALOG="https://github.com/Murkiriel/pardal/releases/latest/download/catalogo.json";
+    // Alternativa semanal oficial quando a central não consegue baixar anexos das Releases.
+    private static final String RAW_CATALOG="https://raw.githubusercontent.com/Murkiriel/pardal/main/catalogo.json";
+    private static final String RAW_CSV="https://raw.githubusercontent.com/Murkiriel/pardal/main/estados/SP/radares.csv";
     private static final long DAY=86400000L;
     private static PardalRadar instance;
     static synchronized PardalRadar shared(Context context, SharedPreferences pref){
@@ -48,6 +51,8 @@ final class PardalRadar {
     private ToneGenerator tone;
     private int toneVolume=-1;
     private long lastGpsLog=0;
+    private Location lastBearingFix;
+    private volatile String lastAudioError="";
     private String lastLoggedCamera="";
     private volatile boolean simulating=false;
     private long simulationStart=0;
@@ -63,7 +68,9 @@ final class PardalRadar {
         this.context=context;this.pref=pref;
         data=new File(context.getFilesDir(),"pardal_sp_radares.csv");
         logger=new FieldLog(context,pref.getBoolean("field_log_enabled",false));
-        mode=Math.max(0,Math.min(3,pref.getInt("pardal_radar_mode",OFF)));
+        // Se o usuário nunca configurou o radar, inicia no modo que realmente avisa.
+        // Uma escolha anterior de "Desligado" continua sendo respeitada.
+        mode=Math.max(0,Math.min(3,pref.getInt("pardal_radar_mode",BOTH)));
         io.execute(()->{try{
             List<Camera> list=parse(data);
             if(!list.isEmpty()){publish(list);status="Base SP: "+list.size()+" radares";}
@@ -71,6 +78,27 @@ final class PardalRadar {
     }
     private void log(String event){logger.setEnabled(pref.getBoolean("field_log_enabled",false));logger.record("RADAR",event);}
     int mode(){return mode;}
+    String modeLabel(){
+        if(mode==OFF)return "Desligado";
+        if(mode==VISUAL)return "Som desligado (somente visual)";
+        if(mode==SMART)return "Inteligente (som só acima do limite)";
+        return "Visual e áudio";
+    }
+    boolean testSound(){
+        try{
+            stopTone();
+            tone=new ToneGenerator(AudioManager.STREAM_MUSIC,95);
+            toneVolume=95;
+            tone.startTone(ToneGenerator.TONE_PROP_BEEP2,440);
+            lastAudioError="";
+            log("teste_som_midia=ok");
+            return true;
+        }catch(Exception e){
+            lastAudioError=e.getClass().getSimpleName();
+            log("teste_som_falha="+lastAudioError);
+            return false;
+        }
+    }
     void setMode(int value){
         mode=Math.max(SMART,Math.min(OFF,value));
         pref.edit().putInt("pardal_radar_mode",mode).apply();
@@ -78,7 +106,8 @@ final class PardalRadar {
         log("modo="+mode);
     }
     boolean isSimulating(){return simulating;}
-    String status(){return status+(busy?" · atualizando…":"");}
+    String status(){return status+(busy?" · atualizando…":"")
+            +(lastAudioError.isEmpty()?"":" · falha som: "+lastAudioError);}
     int count(){return cameras.size();}
     int distance(){return active()?distance:-1;}
     int limit(){Camera c=current;return active()&&c!=null?c.limit:0;}
@@ -112,38 +141,17 @@ final class PardalRadar {
         File temp=new File(context.getCacheDir(),"pardal_sp_new.csv");
         File bak=new File(context.getFilesDir(),"pardal_sp_old.csv");
         try{
-            // Confere SHA-256 do CSV *descompactado* com o catálogo da mesma release.
-            byte[] json=fetch(CATALOG,2_000_000);
-            JSONObject cameraRecord=new JSONObject(new String(json,"UTF-8"))
-                    .getJSONObject("ufs").getJSONObject("SP").getJSONObject("cameras");
-            String expected=cameraRecord.getString("sha256").toLowerCase(Locale.ROOT);
-            long expectedSize=cameraRecord.getLong("bytes");
-            if(!expected.matches("[a-f0-9]{64}")||expectedSize<1000||expectedSize>8_000_000)
-                throw new IOException("Catálogo inválido");
-            HttpURLConnection con=connection(URL);
+            String source="release diária";
             try{
-                if(con.getResponseCode()!=200)throw new IOException("HTTP ZIP "+con.getResponseCode());
-                boolean extracted=false;long bytes=0;
-                try(ZipInputStream zip=new ZipInputStream(new BufferedInputStream(con.getInputStream()))){
-                    ZipEntry ent;byte[] buffer=new byte[8192];
-                    while((ent=zip.getNextEntry())!=null){
-                        String name=ent.getName().replace('\\','/');
-                        if(name.equals("radares.csv")||name.endsWith("/radares.csv")){
-                            try(OutputStream out=new FileOutputStream(temp)){
-                                int n;while((n=zip.read(buffer))!=-1){bytes+=n;
-                                    if(bytes>8_000_000)throw new IOException("CSV excede tamanho permitido");
-                                    out.write(buffer,0,n);
-                                }
-                            }
-                            extracted=true;break;
-                        }
-                        zip.closeEntry();
-                    }
-                }
-                if(!extracted)throw new IOException("CSV não encontrado no ZIP");
-                if(bytes!=expectedSize||!expected.equals(sha256(temp)))
-                    throw new IOException("SHA-256 do CSV não confere com catálogo");
-            }finally{con.disconnect();}
+                downloadReleaseVerified(temp);
+            }catch(Exception releaseError){
+                log("release_indisponivel="+shortError(releaseError));
+                temp.delete();
+                // Caso a hospedagem de anexos da release falhe, a base do repositório
+                // ainda permite alertas offline após conferir bytes e SHA-256.
+                downloadRawVerified(temp);
+                source="repositório semanal";
+            }
             List<Camera> candidate=parse(temp);
             if(candidate.size()<100)throw new IOException("Base contém poucos radares ativos");
             if(bak.exists()&&!bak.delete())throw new IOException("Falha ao limpar backup antigo");
@@ -152,17 +160,74 @@ final class PardalRadar {
                 if(bak.exists())bak.renameTo(data);
                 throw new IOException("Falha na troca da base");
             }
-            publish(candidate);bak.delete();
-            status="Base SP: "+candidate.size()+" radares";
+            publish(candidate);
+            bak.delete();
+            status="Base SP: "+candidate.size()+" radares ("+source+")";
             long now=System.currentTimeMillis();
             pref.edit().putLong("pardal_last_check",now).putLong("pardal_last_success",now).apply();
-            log("base_atualizada quantidade="+candidate.size()+" sha256=ok");
+            log("base_atualizada quantidade="+candidate.size()+" fonte="+source+" sha256=ok");
         }catch(Exception e){
-            status="Última atualização falhou: "+e.getClass().getSimpleName();
-            log("download_falha tipo="+e.getClass().getSimpleName());
-            // Retenta em 1 hora, sem bombardear a rede.
-            pref.edit().putLong("pardal_last_check",System.currentTimeMillis()-23L*60*60*1000L).apply();
+            status="Falha ao carregar base: "+shortError(e);
+            log("download_falha="+shortError(e));
+            pref.edit().putLong("pardal_last_check",
+                    System.currentTimeMillis()-23L*60*60*1000L).apply();
         }finally{temp.delete();busy=false;}
+    }
+    private static String shortError(Exception e){
+        String message=e.getMessage();
+        if(message==null||message.trim().isEmpty())message=e.getClass().getSimpleName();
+        message=message.replace('\n',' ').replace('\r',' ').trim();
+        return message.length()>100?message.substring(0,100):message;
+    }
+    private static JSONObject cameraCatalog(String url)throws Exception{
+        byte[] json=fetch(url,2_000_000);
+        return new JSONObject(new String(json,"UTF-8"))
+                .getJSONObject("ufs").getJSONObject("SP").getJSONObject("cameras");
+    }
+    private static void verifyCsv(File csv,JSONObject record)throws Exception{
+        String expected=record.getString("sha256").toLowerCase(Locale.ROOT);
+        long expectedSize=record.getLong("bytes");
+        if(!expected.matches("[a-f0-9]{64}")||expectedSize<1000||expectedSize>8_000_000)
+            throw new IOException("Dados de integridade inválidos");
+        if(csv.length()!=expectedSize||!expected.equals(sha256(csv)))
+            throw new IOException("CSV não corresponde ao SHA-256 do catálogo");
+    }
+    private void downloadReleaseVerified(File temp)throws Exception{
+        JSONObject record=cameraCatalog(CATALOG);
+        HttpURLConnection con=connection(URL);
+        try{
+            if(con.getResponseCode()!=200)throw new IOException("HTTP ZIP "+con.getResponseCode());
+            boolean extracted=false;
+            long bytes=0;
+            try(ZipInputStream zip=new ZipInputStream(new BufferedInputStream(con.getInputStream()))){
+                ZipEntry ent;
+                byte[] buffer=new byte[8192];
+                while((ent=zip.getNextEntry())!=null){
+                    String name=ent.getName().replace('\\','/');
+                    if(name.equals("radares.csv")||name.endsWith("/radares.csv")){
+                        try(OutputStream out=new FileOutputStream(temp)){
+                            int n;
+                            while((n=zip.read(buffer))!=-1){
+                                bytes+=n;
+                                if(bytes>8_000_000)throw new IOException("CSV grande demais");
+                                out.write(buffer,0,n);
+                            }
+                        }
+                        extracted=true;
+                        break;
+                    }
+                    zip.closeEntry();
+                }
+            }
+            if(!extracted)throw new IOException("radares.csv não encontrado no ZIP");
+            verifyCsv(temp,record);
+        }finally{con.disconnect();}
+    }
+    private void downloadRawVerified(File temp)throws Exception{
+        JSONObject record=cameraCatalog(RAW_CATALOG);
+        byte[] csv=fetch(RAW_CSV,8_000_000);
+        try(OutputStream out=new FileOutputStream(temp)){out.write(csv);}
+        verifyCsv(temp,record);
     }
     private static HttpURLConnection connection(String url)throws IOException{
         HttpURLConnection con=(HttpURLConnection)new URL(url).openConnection();
