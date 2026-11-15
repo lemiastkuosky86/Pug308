@@ -5,6 +5,8 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.ServiceConnection;
 import android.content.pm.PackageManager;
+import android.content.pm.PermissionInfo;
+import android.content.pm.ServiceInfo;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.IBinder;
@@ -112,6 +114,66 @@ final class CanbusVehicleReader {
     }
 
     String status() {return status;}
+    /** Diagnóstico passivo da integração instalada no aparelho. Não envia comandos CAN. */
+    String diagnostic() {
+        StringBuilder b=new StringBuilder();
+        b.append("CANBOX Jancar • investigação\n");
+        b.append("Estado: ").append(status).append('\n');
+        PackageManager pm=context.getPackageManager();
+        boolean granted=context.checkSelfPermission(PERMISSION)==PackageManager.PERMISSION_GRANTED;
+        b.append("Permissão ").append(PERMISSION).append(": ")
+                .append(granted?"CONCEDIDA":"NÃO CONCEDIDA").append('\n');
+        try {
+            PermissionInfo info=pm.getPermissionInfo(PERMISSION,0);
+            int kind=info.protectionLevel & PermissionInfo.PROTECTION_MASK_BASE;
+            b.append("Proteção da permissão: ")
+                    .append(kind==PermissionInfo.PROTECTION_SIGNATURE?"assinatura OEM":
+                            kind==PermissionInfo.PROTECTION_DANGEROUS?"solicitável em runtime":
+                            kind==PermissionInfo.PROTECTION_NORMAL?"normal":"especial ("+kind+")")
+                    .append('\n');
+        } catch(PackageManager.NameNotFoundException e) {
+            b.append("Permissão OEM não declarada neste Android\n");
+        } catch(RuntimeException e) {
+            b.append("Consulta de permissão impedida: ").append(e.getClass().getSimpleName()).append('\n');
+        }
+        try {
+            android.content.pm.PackageInfo pkg=pm.getPackageInfo(PACKAGE,0);
+            b.append("Pacote OEM ").append(PACKAGE).append(": INSTALADO\n");
+            b.append("Versão OEM: ").append(pkg.versionName).append('\n');
+        } catch(PackageManager.NameNotFoundException e) {
+            b.append("Pacote OEM ").append(PACKAGE).append(": não encontrado/visível\n");
+        } catch(RuntimeException e) {
+            b.append("Consulta do pacote bloqueada: ").append(e.getClass().getSimpleName()).append('\n');
+        }
+        try {
+            ServiceInfo svc=pm.getServiceInfo(new ComponentName(PACKAGE,SERVICE),0);
+            b.append("Serviço ").append(SERVICE).append(": declarado\n");
+            b.append("Exportado: ").append(svc.exported?"SIM":"NÃO").append('\n');
+            b.append("Permissão exigida pelo serviço: ")
+                    .append(svc.permission==null?"nenhuma explícita":svc.permission).append('\n');
+        } catch(PackageManager.NameNotFoundException e) {
+            b.append("Serviço ").append(SERVICE).append(": ausente ou oculto\n");
+        } catch(RuntimeException e) {
+            b.append("Consulta do serviço bloqueada: ").append(e.getClass().getSimpleName()).append('\n');
+        }
+        b.append("Binder UI: ").append(uiBinder==null?"não vinculado":"vinculado").append('\n');
+        b.append("Binder CAN: ").append(canBinder==null?"sem interface de dados":"interface localizada").append('\n');
+        Snapshot snap=lastSnapshot;
+        if(snap==null)b.append("Pacotes de telemetria: nenhum\n");
+        else {
+            b.append("Última resposta: ").append((SystemClock.elapsedRealtime()-snap.sampledAt)/1000L).append(" s\n");
+            b.append("CANBOX versão: ").append(snap.canboxVersion.isEmpty()?"não informada":snap.canboxVersion).append('\n');
+            b.append("Vetores presentes: portas=").append(snap.cabin!=null)
+                    .append(" luzes=").append(snap.lights!=null)
+                    .append(" painel=").append(snap.dashboardInts!=null).append('\n');
+            if(snap.dashboardInts!=null)b.append("Painel (valores brutos): ")
+                    .append(java.util.Arrays.toString(snap.dashboardInts)).append('\n');
+            if(snap.dashboardFloats!=null)b.append("Sensores (valores brutos): ")
+                    .append(java.util.Arrays.toString(snap.dashboardFloats)).append('\n');
+            b.append("Valores brutos não são dados validados do Peugeot.\n");
+        }
+        return b.toString();
+    }
     boolean fresh() {
         Snapshot s=lastSnapshot;
         return s!=null && s.hasData() && SystemClock.elapsedRealtime()-s.sampledAt<10000L;
@@ -207,7 +269,10 @@ final class CanbusVehicleReader {
             }
         }catch(Exception ex){
             canBinder=null;
-            updateStatus("Leitura CAN indisponível: "+ex.getClass().getSimpleName(),null);
+            String detail=ex.getMessage()==null?"":ex.getMessage().replace('\n',' ');
+            if(detail.length()>120)detail=detail.substring(0,120);
+            updateStatus("Leitura CAN indisponível: "+ex.getClass().getSimpleName()
+                    +(detail.isEmpty()?"":" • "+detail),null);
         }
         if(started&&worker!=null)worker.postDelayed(this::poll,2500L);
     }
