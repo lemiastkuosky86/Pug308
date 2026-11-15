@@ -2847,56 +2847,105 @@ public class MainActivity extends Activity {
             }
             @Override protected void onDraw(Canvas c){
                 super.onDraw(c);
-                float w=getWidth(),h=getHeight();if(w<=0||h<=0)return;
-                c.drawColor(Color.BLACK);
+                float w=getWidth(),h=getHeight();
+                if(w<=0f||h<=0f)return;
+
                 float scale=Math.min(w/1280f,h/720f);
+                c.drawColor(Color.BLACK);
                 c.save();
-                c.translate((w-1280f*scale)/2,(h-720f*scale)/2);
+                c.translate((w-1280f*scale)/2f,(h-720f*scale)/2f);
                 c.scale(scale,scale);
-                paint.reset();paint.setAntiAlias(true);
-                paint.setTextAlign(Paint.Align.CENTER);
+
+                // Preto grafite com iluminacao fixa muito sutil.
+                // Sem animação ou efeitos por frame: leve para a Jancar.
+                paint.reset();
+                paint.setAntiAlias(true);
+                paint.setShader(new LinearGradient(0f,0f,0f,720f,
+                        new int[]{0xff090C11,0xff010205,0xff0B0E14},
+                        new float[]{0f,.48f,1f},Shader.TileMode.CLAMP));
+                c.drawRect(0f,0f,1280f,720f,paint);
+                paint.setShader(null);
+                paint.setShader(new RadialGradient(640f,315f,560f,
+                        new int[]{0x164A617A,0x05515C72,0x00000000},
+                        new float[]{0f,.48f,1f},Shader.TileMode.CLAMP));
+                c.drawCircle(640f,315f,560f,paint);
+                paint.setShader(null);
+
+                // Logo tipografico em duas espessuras, centralizado pelo tamanho real.
+                paint.setStyle(Paint.Style.FILL);
+                paint.setTextAlign(Paint.Align.LEFT);
                 paint.setTypeface(Typeface.create("sans-serif-light",Typeface.NORMAL));
-                paint.setColor(0xffDDE2E8);
-                paint.setTextSize(33f);
-                c.drawText("Peugeot 308",640f,104f,paint);
+                paint.setTextSize(37f);
+                String word="PEUGEOT";
+                float wordWidth=paint.measureText(word);
+                paint.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL));
+                paint.setTextSize(37f);
+                float modelWidth=paint.measureText("308");
+                float headerLeft=640f-(wordWidth+20f+modelWidth)*.5f;
+                paint.setTypeface(Typeface.create("sans-serif-light",Typeface.NORMAL));
+                paint.setTextSize(37f);
+                paint.setColor(0xffCED5DD);
+                c.drawText(word,headerLeft,105f,paint);
+                paint.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL));
+                paint.setTextSize(37f);
+                paint.setColor(0xffF2F4F7);
+                c.drawText("308",headerLeft+wordWidth+20f,105f,paint);
+
+                // Divisores finos inspirados no painel OEM.
+                paint.setStyle(Paint.Style.STROKE);
+                paint.setStrokeWidth(1.2f);
+                paint.setColor(0xff3A4552);
+                c.drawLine(490f,132f,790f,132f,paint);
+                paint.setColor(0xff26313D);
+                c.drawLine(90f,575f,1190f,575f,paint);
+                c.drawLine(774f,598f,774f,681f,paint);
+                paint.setColor(0xff1F2934);
+                c.drawLine(90f,682f,1190f,682f,paint);
+                paint.setStyle(Paint.Style.FILL);
+
+                // Hora grande, sem efeitos pesados e com alinhamento consistente.
                 String time=new SimpleDateFormat("HH:mm",new Locale("pt","BR"))
                         .format(Calendar.getInstance().getTime());
+                paint.setTextAlign(Paint.Align.CENTER);
                 paint.setTypeface(Typeface.create("sans-serif-thin",Typeface.NORMAL));
-                paint.setColor(0xffF5F6F7);
-                paint.setTextSize(250f);
-                while(paint.getTextSize()>185f&&paint.measureText(time)>1010f)
+                paint.setTextSize(245f);
+                while(paint.getTextSize()>185f&&paint.measureText(time)>1005f)
                     paint.setTextSize(paint.getTextSize()-2f);
-                c.drawText(time,640f,418f,paint);
+                paint.setColor(0xffF5F7F9);
+                c.drawText(time,640f,409f,paint);
 
+                // Clima abaixo do relógio: apenas informações reais já carregadas.
                 boolean hasWeather=weatherLine!=null&&weatherLine.endsWith("°C");
                 String temperature=hasWeather?weatherLine:"--°C";
                 paint.setTypeface(Typeface.create("sans-serif-light",Typeface.NORMAL));
-                paint.setTextSize(41f);paint.setColor(0xffE1E5E9);
-                float textWidth=paint.measureText(temperature);
-                float startX=640f-(textWidth+78f)/2f;
-                weatherGlyph(c,startX+27f,506f,hasWeather?weatherCode:3);
+                paint.setTextSize(39f);
+                float groupWidth=75f+paint.measureText(temperature);
+                float wx=640f-groupWidth/2f;
+                weatherGlyph(c,wx+27f,491f,hasWeather?weatherCode:3);
                 paint.setTextAlign(Paint.Align.LEFT);
-                paint.setColor(0xffE1E5E9);paint.setTextSize(41f);
-                c.drawText(temperature,startX+78f,520f,paint);
+                paint.setColor(0xffE2E7EC);
+                paint.setTextSize(39f);
+                c.drawText(temperature,wx+75f,504f,paint);
 
-                // Área musical em duas linhas: título principal e artista menor.
+                // Faixa inferior: faixa musical à esquerda e comandos à direita.
                 boolean known=(mediaCtl!=null||cachedSpotifyPreview)
                         &&songTitle!=null&&!songTitle.trim().isEmpty()
                         &&!"Nenhuma música em reprodução".equals(songTitle)
                         &&!"Spotify".equals(songTitle);
                 String title=known?songTitle:"Nenhuma música em reprodução";
-                String artist=known&&songArtist!=null? songArtist:"";
+                String artist=known&&songArtist!=null?songArtist:"";
                 paint.setTextAlign(Paint.Align.LEFT);
-                paint.setColor(known?0xffE1E4E8:0xff919AA4);
                 paint.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL));
-                paint.setTextSize(24f);
-                c.drawText(fitted(title,670f),90f,624f,paint);
+                paint.setTextSize(28f);
+                paint.setColor(known?0xffF0F3F7:0xffA0AAB6);
+                c.drawText(fitted(title,630f),92f,630f,paint);
                 paint.setTypeface(Typeface.create("sans-serif-light",Typeface.NORMAL));
-                paint.setTextSize(18f);
-                paint.setColor(0xff8C98A3);
-                c.drawText(fitted(artist,670f),90f,656f,paint);
+                paint.setTextSize(19f);
+                paint.setColor(0xffA6B3C0);
+                c.drawText(fitted(artist,630f),92f,659f,paint);
 
-                // Ícones discretos, com áreas de toque amplas e sem fundos ou sombras.
+                // Quatro controles com o mesmo comando real da tela principal.
+                // O ícone de mudo reflete o estado Android, sem prometer controle MCU.
                 transport(c,850f,636f,0,true);
                 transport(c,956f,636f,1,mediaCtl!=null);
                 transport(c,1062f,636f,2,mediaCtl!=null);
@@ -4651,8 +4700,11 @@ public class MainActivity extends Activity {
             } else {
                 tc(fit(weatherDetail.isEmpty()?weatherCity:weatherDetail,27,tfBold,w-38),cx,y+219,27,cText,tfBold);
                 tc(fit(weatherCondition,18,tfReg,w-40),cx,y+255,18,cMuted,tfReg);
-                // Evita a chuva invadir a linha de informações secundárias.
-                weatherIcon(weatherCode,cx-64,y+322,57);
+                // Mesmo isolamento no card expandido após recolher os atalhos.
+                canvas.save();
+                canvas.clipRect(cx - 106f, y + 286f, cx - 18f, y + 371f);
+                weatherIcon(weatherCode,cx - 63f,y + 326f,50f);
+                canvas.restore();
                 t(weatherLine,cx-20,y+347,Math.min(50,w*.115f),cText,tfBold);
                 float dx = w>500?124:100;
                 text("MÁX / MÍN",cx-dx,y+423,13,cDim,tfBold,Paint.Align.LEFT,0);
@@ -4919,8 +4971,12 @@ public class MainActivity extends Activity {
                         weatherLoading ? "Atualizando…" : (lastWeatherSuccess > 0
                         ? "atualizado há " + ((SystemClock.elapsedRealtime() - lastWeatherSuccess) / 60000) + " min" : "");
                 t(fit(stamp, 13, tfReg, w - 48), x + 24, 359, 13, cDim, tfReg);
-                // Ícone mais alto e compacto: chuva não alcança MÁX/MÍN abaixo.
-                weatherIcon(weatherCode, x + 69, 380, 53);
+                // Área exclusiva para o ícone: nem nuvem nem chuva podem invadir
+                // "atualizado há..." (acima) ou MÁX/MÍN (abaixo), em nenhuma fase.
+                canvas.save();
+                canvas.clipRect(x + 28f, 377f, x + 112f, 427f);
+                weatherIcon(weatherCode, x + 69f, 402f, 44f);
+                canvas.restore();
                 t(fit(weatherLine, 55, tfBold, 195), x + 126, 416, 55, cText, tfBold);
                 statCell(x + 24, 438, "MÁX / MÍN", weatherHigh + " / " + weatherLow);
                 statCellCompact(x + 174, 438, "CHUVA", weatherRain);
