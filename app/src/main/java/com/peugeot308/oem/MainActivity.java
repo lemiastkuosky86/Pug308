@@ -535,7 +535,9 @@ public class MainActivity extends Activity {
     private int rampTarget = -1;
     private ConnectivityManager.NetworkCallback netCallback;
     private String updateBase = DEFAULT_SERVER;
-    private String ghRepo = "lemiastkuosky86/Pug308", notifiedVersion = ""; private int updateSource = 0; private boolean autoUpdate = true, updateChecking = false;
+    private String ghRepo = "lemiastkuosky86/Pug308", notifiedVersion = ""; private int updateSource = 0; private boolean autoUpdate = true, autoDownloadUpdates = true, updateChecking = false;
+    private String updateDownloadVersion = "";
+    private boolean updateInstallPromptShown = false;
     private long updateDownloadId = -1; private Uri pendingInstall = null; private BroadcastReceiver downloadReceiver;
 
     private final Runnable tick = new Runnable() {
@@ -770,7 +772,9 @@ public class MainActivity extends Activity {
         beep = prefs.getBoolean("beep", false);
         themeMode = Math.max(0, Math.min(2, prefs.getInt("theme", 0)));
         updateBase = prefs.getString("server", DEFAULT_SERVER);
-        ghRepo = prefs.getString("gh_repo", "lemiastkuosky86/Pug308"); if (ghRepo.trim().isEmpty()) ghRepo = "lemiastkuosky86/Pug308"; updateSource = prefs.getInt("upd_source", 0); autoUpdate = prefs.getBoolean("upd_auto", true); notifiedVersion = prefs.getString("upd_notified", "");
+        ghRepo = prefs.getString("gh_repo", "lemiastkuosky86/Pug308"); if (ghRepo.trim().isEmpty()) ghRepo = "lemiastkuosky86/Pug308"; updateSource = prefs.getInt("upd_source", 0); autoUpdate = prefs.getBoolean("upd_auto", true); autoDownloadUpdates = prefs.getBoolean("upd_auto_download", true); notifiedVersion = prefs.getString("upd_notified", "");
+        updateDownloadId = prefs.getLong("upd_download_id", -1L);
+        updateDownloadVersion = prefs.getString("upd_download_version", "");
         vehicleMenuEnabled = prefs.getBoolean("vehicle_menu", prefs.getBoolean("vehicle_card", false));
         vehicleCardCount = Math.max(1, Math.min(3, prefs.getInt("vehicle_cards_count", 3)));
         vehicleThirdVisualMode = Math.max(0, Math.min(3, prefs.getInt("vehicle_third_visual_mode", 1)));
@@ -869,6 +873,8 @@ public class MainActivity extends Activity {
         handler.post(shineTick);
         if (!bootArmed) { bootArmed = true; if (SystemClock.elapsedRealtime() < 6 * 60 * 1000L) armStartupFade(); } // ligou o carro (boot recente)
         handler.post(tick);
+        registerUpdateDownloadReceiver();
+        handler.postDelayed(this::checkStoredDownload, 1400L);
         handler.postDelayed(this::maybeAutoUpdate, 25000);
     }
     @Override protected void onResume() {
@@ -883,6 +889,7 @@ public class MainActivity extends Activity {
             updateMedia();
         }
         if (pendingInstall != null && getPackageManager().canRequestPackageInstalls()) { Uri pu = pendingInstall; pendingInstall = null; installApk(pu); }
+        handler.postDelayed(this::checkStoredDownload, 900L);
         startGps();
         if(pardalRadar!=null)pardalRadar.checkDaily(wifiConnected);
         RadarForegroundService.setHomeVisible(true);
@@ -3120,7 +3127,12 @@ public class MainActivity extends Activity {
                     if (updateSource == 0) actionButton(updateButtons, "Definir repositório", () -> editRepo(() -> redraw[0].run()));
                     else actionButton(updateButtons, "Alterar servidor", () -> editServer(() -> redraw[0].run()));
                     switchRow(page, "Verificar automaticamente (a cada 12 h, com internet)", autoUpdate, (v, checked) -> { autoUpdate = checked; getPreferences(0).edit().putBoolean("upd_auto", checked).apply(); });
-                    page.addView(label("O repositório precisa ser público, com uma Release que tenha o arquivo .apk (tag como v1.13). O download vem direto do GitHub e a instalação pede sua confirmação no Android.", 12, cMuted, false));
+                    switchRow(page, "Baixar nova versão automaticamente", autoDownloadUpdates, (v, checked) -> {
+                        autoDownloadUpdates=checked;
+                        getPreferences(0).edit().putBoolean("upd_auto_download", checked).apply();
+                    });
+                    page.addView(label("Ao encontrar um APK mais novo em uma fonte acessível, o download começa sozinho. A instalação sempre pede sua confirmação no Android.", 12, cMuted, false));
+                    page.addView(label("GitHub: exige Release pública com APK. Um repositório privado ou apenas o Artifact do Actions não pode ser baixado diretamente pela central sem autenticação. Alternativa: servidor local com update.json.", 12, cMuted, false));
                     divider(page);
                     section(page,"DIAGNÓSTICO PARA TESTE NA JANCAR","Confere serviços, permissões e recursos sem alterar dados do veículo");
                     LinearLayout diagnosticActions = new LinearLayout(this); diagnosticActions.setPadding(0,dp(8),0,0);page.addView(diagnosticActions);
@@ -3237,10 +3249,21 @@ public class MainActivity extends Activity {
         checkForUpdate(true);
     }
     private void checkForUpdate(boolean silent) { if (updateSource == 1) checkLocalUpdate(silent); else checkGithubUpdate(silent); }
+    private void newUpdateFound(String version, String notes, long size, String url, boolean silent) {
+        if(!autoDownloadUpdates || !silent) {
+            offerUpdate(version,notes,size,url);return;
+        }
+        if(drivingMode || !netOnline) return;
+        if(updateDownloadId>=0 && version.equals(updateDownloadVersion)) {
+            checkStoredDownload();return;
+        }
+        if(updateDownloadId>=0) return;
+        downloadUpdate(url,version,true);
+    }
     private void offerUpdate(String version, String notes, long size, final String url) {
         String n = notes == null ? "" : notes.trim(); if (n.length() > 380) n = n.substring(0, 380) + "…";
         String msg = "Instalada: " + BuildConfig.VERSION_NAME + "\nNova versão: " + version + (size > 0 ? String.format(Locale.US, "  (%.1f MB)", size / 1048576.0) : "") + (n.isEmpty() ? "" : "\n\nNovidades:\n" + n);
-        popupMessage("Atualização disponível", msg, "Baixar e instalar", () -> downloadUpdate(url), "Depois");
+        popupMessage("Atualização disponível", msg, "Baixar", () -> downloadUpdate(url,version,false), "Depois");
     }
     private void checkGithubUpdate(final boolean silent) {
         final String repo = ghRepo.trim();
@@ -3264,9 +3287,10 @@ public class MainActivity extends Activity {
                 runOnUiThread(() -> {
                     if (!newer) { if (!silent) popupInfo("Sistema atualizado", "Versão instalada: " + BuildConfig.VERSION_NAME + "\nÚltima versão no GitHub: " + (tag.isEmpty() ? "--" : tag)); return; }
                     if (url == null || !url.startsWith("https://github.com/")) { if (!silent) popupInfo("Release sem APK", "A versão " + tag + " existe, mas não tem um arquivo .apk anexado."); return; }
-                    if (silent && (tag.equals(notifiedVersion) || drivingMode || activeDialog != null)) return;
+                    if (silent && (drivingMode || activeDialog != null)) return;
+                    if (silent && !autoDownloadUpdates && tag.equals(notifiedVersion)) return;
                     notifiedVersion = tag; getPreferences(0).edit().putString("upd_notified", tag).apply();
-                    offerUpdate(tag, body, sz, url);
+                    newUpdateFound(tag, body, sz, url, silent);
                 });
             } catch (final Exception ex) {
                 final String m = ex instanceof FileNotFoundException ? "Repositório ou release não encontrado. O repositório precisa ser público e ter ao menos uma Release com um arquivo .apk."
@@ -3313,9 +3337,10 @@ public class MainActivity extends Activity {
                 getPreferences(0).edit().putLong("upd_last", System.currentTimeMillis()).apply();
                 runOnUiThread(() -> {
                     if (remoteCode <= BuildConfig.VERSION_CODE) { if (!silent) popupInfo("Sistema atualizado", "Versão instalada: " + BuildConfig.VERSION_NAME + "\nVersão no servidor: " + remoteName); return; }
-                    if (silent && (remoteName.equals(notifiedVersion) || drivingMode || activeDialog != null)) return;
+                    if (silent && (drivingMode || activeDialog != null)) return;
+                    if (silent && !autoDownloadUpdates && remoteName.equals(notifiedVersion)) return;
                     notifiedVersion = remoteName; getPreferences(0).edit().putString("upd_notified", remoteName).apply();
-                    offerUpdate(remoteName, "", 0, updateApkBase + apk);
+                    newUpdateFound(remoteName, "", 0, updateApkBase + apk, silent);
                 });
             } catch (final Exception ex) {
                 if (!silent) runOnUiThread(() -> popupInfo("Não foi possível verificar", "Confira se o PC e a central estão na mesma rede e se o servidor está aberto.\n\n" + ex.getMessage()));
@@ -3323,33 +3348,119 @@ public class MainActivity extends Activity {
         }).start();
     }
 
-    private void downloadUpdate(String url) {
+    private void registerUpdateDownloadReceiver() {
+        if(downloadReceiver!=null)return;
+        downloadReceiver=new BroadcastReceiver(){
+            @Override public void onReceive(Context c,Intent i){
+                if(DownloadManager.ACTION_DOWNLOAD_COMPLETE.equals(i.getAction()))
+                    onDownloadDone(i.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID,-1));
+            }
+        };
+        try {registerReceiver(downloadReceiver,new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE));}
+        catch(RuntimeException ex){downloadReceiver=null;logField("UPDATE","receiver_error="+ex.getClass().getSimpleName());}
+    }
+    private void clearUpdateDownload(){
+        updateDownloadId=-1L;updateDownloadVersion="";
+        getPreferences(0).edit().remove("upd_download_id").remove("upd_download_version").apply();
+    }
+    private void downloadUpdate(String url,String version,boolean automatic) {
+        if(updateDownloadId>=0){checkStoredDownload();return;}
+        if(url==null||(!(url.startsWith("https://")||url.startsWith("http://")))) {
+            if(!automatic)popupInfo("Atualização","Endereço de download inválido");
+            return;
+        }
+        // Downloads são aceitos somente da origem escolhida, nunca de um endereço fornecido por outro app.
+        if(updateSource==0 && !url.startsWith("https://github.com/")){
+            if(!automatic)popupInfo("Atualização","O endereço da Release não é confiável");
+            return;
+        }
+        if(updateSource==1 && !url.startsWith(updateApkBase)){
+            if(!automatic)popupInfo("Atualização","O APK não pertence ao servidor configurado");
+            return;
+        }
         try {
-            File dir = getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS);
-            if (dir != null) { File old = new File(dir, "peugeot308-update.apk"); if (old.exists()) old.delete(); }
-            DownloadManager.Request req = new DownloadManager.Request(Uri.parse(url));
-            req.setTitle("Peugeot 308 Launcher - atualização"); req.setDescription("Baixando a nova versão");
+            File dir=getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS);
+            if(dir==null)throw new IOException("Pasta de downloads inacessível");
+            File old=new File(dir,"peugeot308-update.apk");
+            if(old.exists()&&!old.delete())throw new IOException("Não consegui substituir APK antigo");
+            DownloadManager.Request req=new DownloadManager.Request(Uri.parse(url));
+            req.setTitle("Peugeot 308 • v"+version.replaceFirst("^v",""));
+            req.setDescription("Nova versão sendo baixada automaticamente");
             req.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
             req.setMimeType("application/vnd.android.package-archive");
-            req.setDestinationInExternalFilesDir(this, Environment.DIRECTORY_DOWNLOADS, "peugeot308-update.apk");
-            DownloadManager dm = (DownloadManager) getSystemService(DOWNLOAD_SERVICE);
-            updateDownloadId = dm.enqueue(req);
-            if (downloadReceiver == null) {
-                downloadReceiver = new BroadcastReceiver() { public void onReceive(Context c, Intent i) { onDownloadDone(i.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1)); } };
-                registerReceiver(downloadReceiver, new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE));
-            }
-            snack("Baixando a atualização… o instalador abre sozinho quando terminar");
-        } catch (Exception ex) { popupInfo("Falha no download", String.valueOf(ex.getMessage())); }
+            req.setDestinationInExternalFilesDir(this,Environment.DIRECTORY_DOWNLOADS,"peugeot308-update.apk");
+            DownloadManager dm=(DownloadManager)getSystemService(DOWNLOAD_SERVICE);
+            if(dm==null)throw new IOException("Gerenciador de downloads indisponível");
+            updateDownloadVersion=version;
+            updateInstallPromptShown=false;
+            updateDownloadId=dm.enqueue(req);
+            getPreferences(0).edit().putLong("upd_download_id",updateDownloadId)
+                .putString("upd_download_version",version).apply();
+            registerUpdateDownloadReceiver();
+            logField("UPDATE","download_iniciado versao="+version+" automatico="+automatic);
+            if(!automatic)snack("Baixando v"+version+"…");
+        } catch(Exception ex){
+            clearUpdateDownload();
+            logField("UPDATE","erro_download="+ex.getClass().getSimpleName());
+            if(!automatic)popupInfo("Falha no download",String.valueOf(ex.getMessage()));
+        }
+    }
+    private boolean validDownloadedUpdate(){
+        File dir=getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS);
+        if(dir==null)return false;
+        File apk=new File(dir,"peugeot308-update.apk");
+        if(!apk.isFile()||apk.length()<20000)return false;
+        try{
+            PackageManager pm=getPackageManager();
+            android.content.pm.PackageInfo downloaded=pm.getPackageArchiveInfo(apk.getAbsolutePath(),PackageManager.GET_SIGNATURES);
+            android.content.pm.PackageInfo installed=pm.getPackageInfo(getPackageName(),PackageManager.GET_SIGNATURES);
+            if(downloaded==null||installed==null||!getPackageName().equals(downloaded.packageName))return false;
+            if(downloaded.versionCode<=BuildConfig.VERSION_CODE)return false;
+            if(downloaded.signatures==null||installed.signatures==null||downloaded.signatures.length==0)return false;
+            return java.util.Arrays.equals(downloaded.signatures,installed.signatures);
+        } catch(Exception e){logField("UPDATE","apk_invalido="+e.getClass().getSimpleName());return false;}
+    }
+    private void checkStoredDownload(){
+        if(updateDownloadId<0)return;
+        onDownloadDone(updateDownloadId);
     }
     private void onDownloadDone(long id) {
-        if (id < 0 || id != updateDownloadId) return;
-        DownloadManager dm = (DownloadManager) getSystemService(DOWNLOAD_SERVICE);
-        boolean ok = false; android.database.Cursor c = dm.query(new DownloadManager.Query().setFilterById(id));
-        try { if (c != null && c.moveToFirst()) ok = c.getInt(c.getColumnIndex(DownloadManager.COLUMN_STATUS)) == DownloadManager.STATUS_SUCCESSFUL; } finally { if (c != null) c.close(); }
-        if (!ok) { popupInfo("Download falhou", "Não consegui baixar a atualização. Tente de novo com a internet estável."); return; }
-        Uri u = dm.getUriForDownloadedFile(id);
-        if (u == null) { popupInfo("Download concluído", "O arquivo foi baixado em Downloads, mas não consegui abri-lo automaticamente."); return; }
-        installApk(u);
+        if(id<0||id!=updateDownloadId)return;
+        DownloadManager dm=(DownloadManager)getSystemService(DOWNLOAD_SERVICE);
+        if(dm==null)return;
+        android.database.Cursor c=null;
+        int status=-1;
+        try{
+            c=dm.query(new DownloadManager.Query().setFilterById(id));
+            if(c!=null&&c.moveToFirst())status=c.getInt(c.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS));
+        }catch(Exception e){logField("UPDATE","consulta_download="+e.getClass().getSimpleName());return;}
+        finally{if(c!=null)c.close();}
+        if(status==DownloadManager.STATUS_RUNNING||status==DownloadManager.STATUS_PAUSED||status==DownloadManager.STATUS_PENDING)return;
+        if(status!=DownloadManager.STATUS_SUCCESSFUL){
+            clearUpdateDownload();
+            logField("UPDATE","download_falhou");
+            if(appForeground&&!drivingMode)snack("Atualização: download falhou. Tente mais tarde.");
+            return;
+        }
+        if(!validDownloadedUpdate()){
+            clearUpdateDownload();
+            File dir=getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS);
+            if(dir!=null)new File(dir,"peugeot308-update.apk").delete();
+            logField("UPDATE","apk_rejeitado pacote_versao_ou_assinatura");
+            if(appForeground&&!drivingMode)popupInfo("Atualização rejeitada","O APK baixado não corresponde ao launcher, não é mais novo ou não tem a assinatura original.");
+            return;
+        }
+        if(updateInstallPromptShown||!appForeground||drivingMode||(activeDialog!=null&&activeDialog.isShowing()))return;
+        Uri uri=dm.getUriForDownloadedFile(id);
+        if(uri==null)return;
+        updateInstallPromptShown=true;
+        final String version=updateDownloadVersion;
+        popupMessage("Atualização pronta",
+            "A versão "+version+" foi baixada e verificada. Instalar agora? O Android pedirá sua confirmação.",
+            "Instalar",()->{
+                clearUpdateDownload();
+                installApk(uri);
+            },"Depois");
     }
     private void installApk(final Uri uri) {
         try {
