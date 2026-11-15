@@ -2669,68 +2669,156 @@ public class MainActivity extends Activity {
             @Override protected void onDraw(Canvas c) {
                 super.onDraw(c);
                 float w = getWidth(), h = getHeight();
-                // Descanso OEM: preto verdadeiro para a central à noite e tipografia legível.
-                c.drawColor(Color.BLACK);
-                float cx = w * .5f;
-                paint.setShader(null);
-                paint.setStyle(Paint.Style.FILL);
-                paint.setTextAlign(Paint.Align.CENTER);
-                paint.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL));
-                paint.setTextSize(Math.min(h*.035f,25f*getResources().getDisplayMetrics().scaledDensity));
-                paint.setColor(accent);
-                c.drawText("P E U G E O T    3 0 8", cx, h*.13f, paint);
+                // Descanso OEM panorâmico: design 1280x720 e composição independente da densidade.
+                float scale = Math.min(w / 1280f, h / 720f);
+                c.drawColor(0xff04070B);
+                c.save();
+                c.translate((w-1280f*scale)/2f,(h-720f*scale)/2f);
+                c.scale(scale,scale);
 
-                Calendar now=Calendar.getInstance();
+                paint.reset();
+                paint.setAntiAlias(true);
+                paint.setFilterBitmap(true);
+                paint.setStyle(Paint.Style.FILL);
+                paint.setShader(new LinearGradient(0f,0f,1280f,720f,
+                        new int[]{0xff101924,0xff080D14,0xff05080D},null,Shader.TileMode.CLAMP));
+                c.drawRect(0f,0f,1280f,720f,paint);
+                paint.setShader(null);
+                // Acento lateral discreto, sem iluminação pulsante para não distrair à noite.
+                paint.setColor(accent);
+                c.drawRoundRect(68f,104f,74f,584f,3f,3f,paint);
+                paint.setTextAlign(Paint.Align.LEFT);
+                paint.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL));
+                paint.setColor(0xffD5E1EB);
+                paint.setTextSize(26f);
+                c.drawText("PEUGEOT",100f,118f,paint);
+                paint.setTypeface(Typeface.create("sans-serif-light",Typeface.NORMAL));
+                paint.setColor(accent);
+                paint.setTextSize(34f);
+                c.drawText("308",264f,119f,paint);
+                paint.setColor(0xff3B4755);
+                paint.setStrokeWidth(1f);
+                c.drawLine(100f,142f,1180f,142f,paint);
+
+                Calendar now = Calendar.getInstance();
                 String hour=new SimpleDateFormat("HH:mm",new Locale("pt","BR")).format(now.getTime());
                 String date=new SimpleDateFormat("EEEE, dd 'de' MMMM",new Locale("pt","BR")).format(now.getTime());
                 paint.setTypeface(Typeface.create("sans-serif-thin",Typeface.NORMAL));
-                paint.setTextSize(Math.min(h*.29f,w*.22f));
-                paint.setColor(0xffF2F5F8);
-                c.drawText(hour,cx,h*.425f,paint);
+                paint.setColor(0xffF2F5F9);
+                paint.setTextSize(154f);
+                while(paint.getTextSize()>120f && paint.measureText(hour)>560f)
+                    paint.setTextSize(paint.getTextSize()-2f);
+                c.drawText(hour,101f,362f,paint);
                 paint.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL));
-                paint.setTextSize(Math.min(h*.039f,27f*getResources().getDisplayMetrics().scaledDensity));
-                paint.setColor(0xffB6C0CA);
-                c.drawText(date,cx,h*.535f,paint);
-
                 paint.setColor(accent);
-                paint.setStrokeWidth(Math.max(2f,h*.0035f));
-                c.drawLine(w*.36f,h*.595f,w*.64f,h*.595f,paint);
+                paint.setTextSize(20f);
+                c.drawText("HORA LOCAL",106f,218f,paint);
+                paint.setTypeface(Typeface.create("sans-serif",Typeface.NORMAL));
+                paint.setTextSize(29f);
+                paint.setColor(0xffAEBECC);
+                c.drawText(date,108f,431f,paint);
+                paint.setColor(0xff4E5D69);
+                paint.setTextSize(17f);
+                c.drawText("TELA DE DESCANSO",108f,511f,paint);
+
+                // Card de mídia no estilo dos painéis da Home, com cantos e contornos suaves.
+                float px=725f,py=181f,pw=486f,ph=373f;
+                paint.setColor(0xff141D28);
+                c.drawRoundRect(px,py,px+pw,py+ph,26f,26f,paint);
+                paint.setStyle(Paint.Style.STROKE);
+                paint.setStrokeWidth(1.6f);
+                paint.setColor(0xff354453);
+                c.drawRoundRect(px,py,px+pw,py+ph,26f,26f,paint);
+                paint.setStyle(Paint.Style.FILL);
+                paint.setColor(accent);
+                c.drawRoundRect(px+28f,py+30f,px+32f,py+68f,2f,2f,paint);
+                paint.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL));
+                paint.setTextSize(17f);
+                paint.setColor(0xffA6B6C5);
+                c.drawText("TOCANDO AGORA",px+49f,py+55f,paint);
+
+                final float coverX=px+30f,coverY=py+95f,coverSide=171f;
+                paint.setColor(0xff273442);
+                c.drawRoundRect(coverX,coverY,coverX+coverSide,coverY+coverSide,18f,18f,paint);
+                if(albumArt!=null&&!albumArt.isRecycled()){
+                    c.save();
+                    Path shape=new Path();
+                    shape.addRoundRect(coverX,coverY,coverX+coverSide,coverY+coverSide,18f,18f,Path.Direction.CW);
+                    c.clipPath(shape);
+                    int bw=albumArt.getWidth(),bh=albumArt.getHeight();
+                    int side=Math.min(bw,bh);
+                    if(side>0)c.drawBitmap(albumArt,
+                            new Rect((bw-side)/2,(bh-side)/2,(bw+side)/2,(bh+side)/2),
+                            new RectF(coverX,coverY,coverX+coverSide,coverY+coverSide),paint);
+                    c.restore();
+                }else{
+                    paint.setTextAlign(Paint.Align.CENTER);
+                    paint.setTextSize(72f);
+                    paint.setColor(0xff889DB0);
+                    c.drawText("♫",coverX+coverSide/2f,coverY+coverSide*.70f,paint);
+                    paint.setTextAlign(Paint.Align.LEFT);
+                }
 
                 boolean hasTrack=(mediaCtl!=null||cachedSpotifyPreview)&&songTitle!=null
                         && !songTitle.trim().isEmpty()&&!songTitle.equals("Nenhuma música em reprodução");
-                if(hasTrack){
-                    String title=songTitle.trim();
-                    paint.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL));
-                    paint.setColor(0xffF7F8FB);
-                    paint.setTextSize(Math.min(h*.055f,39f*getResources().getDisplayMetrics().scaledDensity));
-                    while(paint.getTextSize()>18f && paint.measureText(title)>w*.84f)
-                        paint.setTextSize(paint.getTextSize()-1f);
-                    c.drawText(title,cx,h*.705f,paint);
-                    String artist=songArtist==null?"":songArtist.trim();
-                    paint.setTypeface(Typeface.create("sans-serif",Typeface.NORMAL));
-                    paint.setColor(0xff9DAAB7);
-                    paint.setTextSize(Math.min(h*.034f,24f*getResources().getDisplayMetrics().scaledDensity));
-                    while(paint.getTextSize()>13f && paint.measureText(artist)>w*.82f)
-                        paint.setTextSize(paint.getTextSize()-1f);
-                    c.drawText(artist,cx,h*.762f,paint);
-
-                    if(songDuration>0){
-                        float px1=w*.32f,px2=w*.68f,py=h*.82f;
-                        paint.setStrokeWidth(Math.max(3f,h*.005f));
-                        paint.setColor(0xff27323B); c.drawLine(px1,py,px2,py,paint);
-                        float fraction=Math.min(1f,Math.max(0f,livePosition()/(float)songDuration));
-                        paint.setColor(accent); c.drawLine(px1,py,px1+(px2-px1)*fraction,py,paint);
+                String track=hasTrack?songTitle.trim():"Nenhuma música";
+                String artist=hasTrack&&songArtist!=null?songArtist.trim():"Aguardando reprodução";
+                // Até duas linhas para o título sem cortar a faixa nem sobrepor o artista.
+                float tx=px+222f,ty=py+153f,maxWidth=pw-250f;
+                paint.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL));
+                paint.setTextSize(25f);
+                paint.setColor(0xffF1F5F9);
+                String first=track,second="";
+                if(paint.measureText(track)>maxWidth){
+                    int split=0;
+                    for(int i=1;i<=track.length();i++){
+                        if(paint.measureText(track.substring(0,i))>maxWidth)break;
+                        split=i;
                     }
-                }else{
-                    paint.setTypeface(Typeface.create("sans-serif",Typeface.NORMAL));
-                    paint.setTextSize(Math.min(h*.032f,20f*getResources().getDisplayMetrics().scaledDensity));
-                    paint.setColor(0xff8B99A7);
-                    c.drawText("Música em espera",cx,h*.73f,paint);
+                    int space=track.lastIndexOf(' ',split);
+                    if(space>split/2)split=space;
+                    first=track.substring(0,Math.max(1,split)).trim();
+                    second=track.substring(Math.max(1,split)).trim();
+                    while(!second.isEmpty()&&paint.measureText(second)>maxWidth && second.length()>2)
+                        second=second.substring(0,second.length()-2).trim()+"…";
+                }
+                c.drawText(first,tx,ty,paint);
+                if(!second.isEmpty())c.drawText(second,tx,ty+33f,paint);
+                paint.setTypeface(Typeface.create("sans-serif",Typeface.NORMAL));
+                paint.setColor(0xffABBBCB);
+                paint.setTextSize(19f);
+                while(paint.getTextSize()>14f&&paint.measureText(artist)>maxWidth)
+                    paint.setTextSize(paint.getTextSize()-1f);
+                c.drawText(artist,tx,ty+(second.isEmpty()?48f:78f),paint);
+
+                // Progresso de reprodução não interfere no volume nem nos comandos.
+                float barX=px+30f,barY=py+314f,barW=pw-60f;
+                paint.setColor(0xff3B4A58);
+                c.drawRoundRect(barX,barY,barX+barW,barY+6f,3f,3f,paint);
+                if(hasTrack&&songDuration>0){
+                    float progress=Math.max(0f,Math.min(1f,livePosition()/(float)songDuration));
+                    paint.setColor(accent);
+                    c.drawRoundRect(barX,barY,barX+barW*progress,barY+6f,3f,3f,paint);
                 }
                 paint.setTypeface(Typeface.create("sans-serif",Typeface.NORMAL));
-                paint.setTextSize(Math.min(h*.025f,16f*getResources().getDisplayMetrics().scaledDensity));
-                paint.setColor(0xff64717D);
-                c.drawText("Toque para voltar",cx,h*.94f,paint);
+                paint.setTextSize(15f);
+                paint.setColor(0xff8193A5);
+                c.drawText(hasTrack&&songDuration>0?timeString(livePosition()):"--:--",barX,barY+29f,paint);
+                paint.setTextAlign(Paint.Align.RIGHT);
+                c.drawText(hasTrack&&songDuration>0?timeString(songDuration):"--:--",barX+barW,barY+29f,paint);
+                paint.setTextAlign(Paint.Align.LEFT);
+
+                paint.setColor(0xff394A5A);
+                paint.setStrokeWidth(1f);
+                c.drawLine(100f,615f,1180f,615f,paint);
+                paint.setTypeface(Typeface.create("sans-serif",Typeface.NORMAL));
+                paint.setTextSize(18f);
+                paint.setColor(0xff8395A6);
+                c.drawText("Toque em qualquer lugar para voltar",100f,657f,paint);
+                paint.setTextAlign(Paint.Align.RIGHT);
+                paint.setColor(accent);
+                c.drawText("308  •  OEM",1178f,657f,paint);
+                c.restore();
             }
         };
         clock.setOnClickListener(v -> dlg.dismiss());
