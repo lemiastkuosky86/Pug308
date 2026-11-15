@@ -525,6 +525,8 @@ public class MainActivity extends Activity {
     private boolean weatherAuto = false;
     // So desenha movimento no icone do clima, sem nova consulta meteorologica.
     private boolean weatherMotionEnabled = true;
+    // Brilho que percorre a borda dos cards grandes; desligável em Aparência.
+    private boolean cardEdgeMotionEnabled = true;
     private double weatherAutoLat = Double.NaN, weatherAutoLon = Double.NaN;
     private long weatherAutoChecked = 0;
     private String brandTitle = "PEUGEOT 308";
@@ -847,6 +849,7 @@ public class MainActivity extends Activity {
         weatherCity = prefs.getString("city", "");
         weatherAuto = prefs.getBoolean("weather_auto", false);
         weatherMotionEnabled = prefs.getBoolean("weather_motion", true);
+        cardEdgeMotionEnabled = prefs.getBoolean("card_edge_motion", true);
         brandTitle = prefs.getString("brand_title", "PEUGEOT 308");
         minimalIcons = prefs.getBoolean("minimal_icons", true);
         lyricsOn=prefs.getBoolean("lyrics_on",false);
@@ -926,6 +929,7 @@ public class MainActivity extends Activity {
         if (dashboard != null) {
             dashboard.invalidate(); // ícones já estão em cache por pacote
             dashboard.setWeatherAnimationActive(true); // somente com a Activity em primeiro plano
+            dashboard.setCardEdgeAnimationActive(true);
         }
         // Cobre firmwares que retomam a Activity mas não transmitem ACTION_SCREEN_ON.
         if (wifiAutoOn && wifiAutoPausedAtElapsed > 0L &&
@@ -937,7 +941,10 @@ public class MainActivity extends Activity {
     @Override protected void onPause() {
         handler.removeCallbacks(homeIdleTimeout);
         if (screenSaverDialog != null) screenSaverDialog.dismiss();
-        if (dashboard != null) dashboard.setWeatherAnimationActive(false);
+        if (dashboard != null) {
+            dashboard.setWeatherAnimationActive(false);
+            dashboard.setCardEdgeAnimationActive(false);
+        }
         appForeground = false;
         RadarForegroundService.setHomeVisible(false);
         if(pardalRadar!=null)pardalRadar.stopSimulation();
@@ -2932,7 +2939,14 @@ public class MainActivity extends Activity {
                     page.addView(label("Estas opções escondem apenas os botões da barra, não desligam Bluetooth, Wi-Fi ou os serviços do veículo.",12,cMuted,false));
                     page.addView(label("Se o Wi-Fi desliga ao ligar o carro, confira as configurações de energia/rede da Jancar: o launcher não executa comandos para desligá-lo.",12,cMuted,false));
                     divider(page);
-                    section(page, "TELA DE DESCANSO", "Relogio em tela cheia; o som continua tocando e um toque retorna a Home.");
+                    section(page,"ANIMAÇÃO DOS CARDS","Brilho discreto percorre a borda dos cards da Home, sem alterar conteúdo ou toques.");
+                    switchRow(page,"Brilho correndo na borda dos cards",cardEdgeMotionEnabled,(v,checked)->{
+                        cardEdgeMotionEnabled=checked;
+                        getPreferences(0).edit().putBoolean("card_edge_motion",checked).apply();
+                        if(dashboard!=null){dashboard.setCardEdgeAnimationActive(true);dashboard.invalidate();}
+                    });
+                    divider(page);
+                    section(page, "TELA DE DESCANSO", "Relógio e clima grandes, música e controles no fundo preto; toque fora dos controles para voltar.");
                     switchRow(page, "Ativar tela de descanso automatica", screenSaverEnabled, (v,checked)->{
                         screenSaverEnabled=checked; getPreferences(0).edit().putBoolean("screensaver_enabled", checked).apply();
                         resetHomeIdleTimer();
@@ -3968,8 +3982,30 @@ public class MainActivity extends Activity {
             weatherAnimationRunning = enabled && weatherMotionEnabled;
             if (weatherAnimationRunning) postDelayed(weatherFrame, WEATHER_FRAME_MS);
         }
+        // ~7 quadros/segundo apenas com a Home visível; cessa em standby e diálogos.
+        private static final long CARD_EDGE_FRAME_MS = 145L;
+        private boolean cardEdgeRunning = false;
+        private final Runnable cardEdgeFrame = new Runnable() {
+            @Override public void run() {
+                if(!cardEdgeRunning)return;
+                if(appForeground && screenSaverDialog==null && getWidth()>0 && getHeight()>0
+                        && getWindowVisibility()==View.VISIBLE && isShown()){
+                    float scale=Math.min(getWidth()/1280f,getHeight()/720f);
+                    float left=(getWidth()-1280f*scale)/2f,top=(getHeight()-720f*scale)/2f;
+                    invalidate((int)(left+24f*scale),(int)(top+88f*scale),
+                            (int)(left+1258f*scale),(int)(top+702f*scale));
+                }
+                postDelayed(this,CARD_EDGE_FRAME_MS);
+            }
+        };
+        void setCardEdgeAnimationActive(boolean enabled){
+            removeCallbacks(cardEdgeFrame);
+            cardEdgeRunning=enabled&&cardEdgeMotionEnabled;
+            if(cardEdgeRunning)postDelayed(cardEdgeFrame,CARD_EDGE_FRAME_MS);
+        }
         @Override protected void onDetachedFromWindow() {
             setWeatherAnimationActive(false);
+            setCardEdgeAnimationActive(false);
             super.onDetachedFromWindow();
         }
         Dashboard() { super(MainActivity.this); setHapticFeedbackEnabled(true); }
@@ -4032,6 +4068,37 @@ public class MainActivity extends Activity {
                 fill((artCur & 0x00FFFFFF) | (a << 24)); r.set(x, y, x + w, y + h); canvas.drawRoundRect(r, 26, 26, p);
             }
             rrs(x, y, w, h, 26, cHair, 1.2f);
+            if(cardEdgeMotionEnabled && appForeground && screenSaverDialog==null){
+                // Trilha luminosa fina percorrendo o perímetro arredondado, sem overlays.
+                Path outline=new Path();
+                outline.addRoundRect(x+2f,y+2f,x+w-2f,y+h-2f,24f,24f,Path.Direction.CW);
+                PathMeasure measure=new PathMeasure(outline,true);
+                float perimeter=measure.getLength();
+                if(perimeter>0f){
+                    float phase=((SystemClock.uptimeMillis()+((int)x*9L))%7400L)/7400f;
+                    float position=phase*perimeter;
+                    Path trail=new Path();
+                    edgeSegment(measure,position-116f,position,trail);
+                    p.reset();p.setAntiAlias(true);p.setStyle(Paint.Style.STROKE);
+                    p.setStrokeCap(Paint.Cap.ROUND);p.setStrokeJoin(Paint.Join.ROUND);
+                    p.setStrokeWidth(5f);
+                    p.setColor(al(accent,night?48:40));
+                    canvas.drawPath(trail,p);
+                    Path core=new Path();
+                    edgeSegment(measure,position-33f,position,core);
+                    p.setStrokeWidth(2.5f);
+                    p.setColor(al(accent,night?215:195));
+                    canvas.drawPath(core,p);
+                    p.setStyle(Paint.Style.FILL);
+                }
+            }
+        }
+        void edgeSegment(PathMeasure measure,float start,float end,Path target){
+            float length=measure.getLength();
+            if(start<0f){
+                measure.getSegment(length+start,length,target,true);
+                if(end>0)measure.getSegment(0f,end,target,true);
+            }else if(end>start)measure.getSegment(start,end,target,true);
         }
         void drawArtGlow() {
             float a = Color.alpha(artCur) / 255f * (night ? .30f : .22f);
