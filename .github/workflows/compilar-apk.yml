@@ -105,12 +105,31 @@ jobs:
 
           echo "Assinatura original validada com sucesso."
 
+      - name: Renomear APK pela versao instalada
+        id: rename_apk
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="app/build/outputs/apk/debug/app-debug.apk"
+          PACKAGE=$("$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$APK" | grep '^package:')
+          VERSION=$(sed -nE "s/.*versionName='([^']+)'.*/\1/p" <<< "$PACKAGE")
+          CODE=$(sed -nE "s/.*versionCode='([^']+)'.*/\1/p" <<< "$PACKAGE")
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ || ! "$CODE" =~ ^[0-9]+$ ]]; then
+            echo "ERRO: versao ou codigo do APK invalido: $PACKAGE"
+            exit 1
+          fi
+          mkdir -p dist
+          FILE_NAME="308 Launcher V${VERSION}.apk"
+          cp "$APK" "dist/$FILE_NAME"
+          printf '{"versionCode":%s,"versionName":"%s","apk":"%s"}\n' "$CODE" "$VERSION" "$FILE_NAME" > dist/update.json
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "APK final: dist/$FILE_NAME"
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "dist/$FILE_NAME" | grep -F "application-label:'308 Launcher'"
+
       - name: Publicar APK validado
         uses: actions/upload-artifact@v4
         with:
-          name: Peugeot308Launcher-1.14-v114-assinatura-original
-          path: |
-            app/build/outputs/apk/debug/app-debug.apk
-            update.json
+          name: 308 Launcher V${{ steps.rename_apk.outputs.version }}
+          path: dist/
           if-no-files-found: error
           retention-days: 30

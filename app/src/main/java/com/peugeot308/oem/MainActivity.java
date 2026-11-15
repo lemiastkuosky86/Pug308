@@ -3333,14 +3333,14 @@ public class MainActivity extends Activity {
                 final int remoteCode = j.getInt("versionCode");
                 final String remoteName = j.optString("versionName", String.valueOf(remoteCode));
                 final String apk = j.optString("apk", "app-debug.apk");
-                if (!apk.matches("[A-Za-z0-9._-]+\\.apk")) throw new IOException("Nome de APK inválido");
+                if (!apk.matches("[A-Za-z0-9._ -]+\\.apk")) throw new IOException("Nome de APK inválido");
                 getPreferences(0).edit().putLong("upd_last", System.currentTimeMillis()).apply();
                 runOnUiThread(() -> {
                     if (remoteCode <= BuildConfig.VERSION_CODE) { if (!silent) popupInfo("Sistema atualizado", "Versão instalada: " + BuildConfig.VERSION_NAME + "\nVersão no servidor: " + remoteName); return; }
                     if (silent && (drivingMode || activeDialog != null)) return;
                     if (silent && !autoDownloadUpdates && remoteName.equals(notifiedVersion)) return;
                     notifiedVersion = remoteName; getPreferences(0).edit().putString("upd_notified", remoteName).apply();
-                    newUpdateFound(remoteName, "", 0, updateApkBase + apk, silent);
+                    newUpdateFound(remoteName, "", 0, updateApkBase + Uri.encode(apk), silent);
                 });
             } catch (final Exception ex) {
                 if (!silent) runOnUiThread(() -> popupInfo("Não foi possível verificar", "Confira se o PC e a central estão na mesma rede e se o servidor está aberto.\n\n" + ex.getMessage()));

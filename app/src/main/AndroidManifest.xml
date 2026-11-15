@@ -17,7 +17,7 @@
  <uses-permission android:name="android.permission.DOWNLOAD_WITHOUT_NOTIFICATION"/>
  <uses-permission android:name="android.permission.WRITE_SETTINGS"/>
  <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
- <application android:label="Peugeot 308 OEM" android:theme="@android:style/Theme.Material.NoActionBar" android:usesCleartextTraffic="true">
+ <application android:label="308 Launcher" android:icon="@drawable/ic_launcher" android:roundIcon="@drawable/ic_launcher" android:theme="@android:style/Theme.Material.NoActionBar" android:usesCleartextTraffic="true">
   <activity android:name=".MainActivity" android:exported="true" android:screenOrientation="landscape"
    android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenSize|smallestScreenSize|screenLayout|uiMode|locale|layoutDirection|fontScale|density">
    <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
