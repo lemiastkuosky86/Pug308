@@ -1667,26 +1667,64 @@ public class MainActivity extends Activity {
             showVolume();
         } catch (Exception e) { audioStatus = "Erro de áudio: " + e.getClass().getSimpleName(); snack("Volume indisponível"); }
     }
-    /** Mudo com aviso persistente: descida curta e retorno gradual de 1,5 segundo. */
+    /** Silencia o stream de mídia de imediato. O indicador só permanece se o Android
+     *  confirmar mute ou volume zero; o firmware da Jancar pode controlar a MCU à parte. */
     private void toggleMute() {
+        if (audio == null) return;
         try {
             cancelRamp();
-            int v = audio.getStreamVolume(AudioManager.STREAM_MUSIC);
-            if (audio.isVolumeFixed()) { audioStatus = "Volume fixo na Jancar/MCU"; snack("Mudo Android indisponível nesta central"); return; }
-            if (!userMuted && v > 0) {
-                previousVolume = v;
-                userMuted = true;
+            final int stream=AudioManager.STREAM_MUSIC;
+            final int current=audio.getStreamVolume(stream);
+            final int max=Math.max(1,audio.getStreamMaxVolume(stream));
+            boolean androidMuted=audio.isStreamMute(stream);
+
+            if (!userMuted && current>0 && !androidMuted) {
+                if (audio.isVolumeFixed()) {
+                    audioStatus="Android informa volume fixo: mudo da MCU requer integração OEM";
+                    snack("Jancar controla o mudo pela MCU; função indisponível neste Android");
+                    return;
+                }
+                previousVolume=Math.max(1,current);
+                // Evita que o volume automático recoloque o som durante o mudo.
+                if(snd!=null)snd.volumeBusy=true;
+                // Tenta mute de plataforma e força volume Android a zero como redundância.
+                try { audio.adjustStreamVolume(stream,AudioManager.ADJUST_MUTE,0); }
+                catch(Exception e){logField("AUDIO","ADJUST_MUTE: "+e.getClass().getSimpleName());}
+                try { audio.setStreamVolume(stream,0,0); }
+                catch(Exception e){logField("AUDIO","SET_VOLUME_ZERO: "+e.getClass().getSimpleName());}
+                boolean confirmed=audio.isStreamMute(stream)||audio.getStreamVolume(stream)==0;
+                userMuted=confirmed;
+                audioStatus=confirmed?"Mídia Android silenciada (MCU pode ser independente)":
+                        "Não foi possível silenciar o stream de mídia Android";
+                if(!confirmed){
+                    if(snd!=null)snd.volumeBusy=false;
+                    snack("Mudo não confirmado. A central pode exigir comando próprio da Jancar");
+                }
+                if(snd!=null)snd.volumeChanged();
+                logField("AUDIO","MUTE "+audioSnapshot());
                 showVolume();
-                audioStatus = "Mudo Android acionado; MCU pode ter controle independente";
-                rampVolume(0, 450, null);
-            } else {
-                userMuted = false;
-                // O MUDO só desaparece depois que começa a restauração gradual.
-                audioStatus = "Retornando volume de mídia Android";
-                rampVolume(Math.max(1, previousVolume), 1500, () -> showVolume());
-                showVolume();
+                return;
             }
-        } catch (Exception ignored) {}
+
+            // Desmuta inclusive quando o Android silenciou fora do launcher.
+            userMuted=false;
+            if(snd!=null)snd.volumeBusy=true;
+            try{audio.adjustStreamVolume(stream,AudioManager.ADJUST_UNMUTE,0);}
+            catch(Exception e){logField("AUDIO","ADJUST_UNMUTE: "+e.getClass().getSimpleName());}
+            try{audio.setStreamVolume(stream,0,0);}catch(Exception ignored){}
+            final int restore=Math.max(1,Math.min(max,previousVolume));
+            audioStatus="Restaurando volume anterior da mídia Android";
+            // Mantém retorno gradual, mas não reativa o stream enquanto está mudo.
+            rampVolume(restore,1500,()->{
+                if(snd!=null){snd.volumeBusy=false;snd.volumeChanged();}
+                showVolume();
+            });
+            showVolume();
+        } catch (Exception e) {
+            if(snd!=null)snd.volumeBusy=false;
+            audioStatus="Erro ao alternar mudo: "+e.getClass().getSimpleName();
+            snack("Não foi possível ajustar o mudo desta central");
+        }
     }
     private void rampVolume(final int target, final int totalMs, final Runnable done) {
         cancelRamp();
@@ -4991,7 +5029,10 @@ public class MainActivity extends Activity {
 
         // ---------- toque
         void handle(int id, float x, float y) {
-            feedback();
+            // Ao ativar MUDO não emitir o bipe de feedback pelo canal de notificações.
+            if(id==3||id==46) {
+                if(dashboard!=null)dashboard.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
+            } else feedback();
             if (id >= 100) {
                 int slot = id - 100; ArrayList<Integer> b = dockBuiltins(); List<String> pins = dockPinned();
                 if (slot < b.size()) launch(b.get(slot));
