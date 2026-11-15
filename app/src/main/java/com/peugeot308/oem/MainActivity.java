@@ -984,7 +984,7 @@ public class MainActivity extends Activity {
             boolean criticalSpeedCard = topWidgetEnabled && speedVisualOn() && speedNow() > speedLimit * 1.15f;
             boolean speedCardShown = false;
             for (int id : topSlot) if (id == 0) { speedCardShown = true; break; }
-            if (dashboard != null && ((m < SHINE_MS && !volumeVisible) || (criticalSpeedCard && speedCardShown))) dashboard.invalidateHeader();
+            if (dashboard != null && (m < SHINE_MS || (criticalSpeedCard && speedCardShown))) dashboard.invalidateHeader();
             handler.postDelayed(this, m < SHINE_MS ? 65 : Math.min(500, SHINE_PERIOD - m));
         }
     };
@@ -2666,156 +2666,47 @@ public class MainActivity extends Activity {
             }
             @Override protected void onDraw(Canvas c) {
                 super.onDraw(c);
-                float w = getWidth(), h = getHeight();
-                // Descanso OEM panorâmico: design 1280x720 e composição independente da densidade.
-                float scale = Math.min(w / 1280f, h / 720f);
-                c.drawColor(0xff04070B);
+                float w=getWidth(),h=getHeight();
+                if(w<=0||h<=0)return;
+                // Descanso OEM minimalista: preto verdadeiro, sem gradiente, widgets ou cards.
+                c.drawColor(Color.BLACK);
+                float scale=Math.min(w/1280f,h/720f);
                 c.save();
                 c.translate((w-1280f*scale)/2f,(h-720f*scale)/2f);
                 c.scale(scale,scale);
-
                 paint.reset();
                 paint.setAntiAlias(true);
-                paint.setFilterBitmap(true);
                 paint.setStyle(Paint.Style.FILL);
-                paint.setShader(new LinearGradient(0f,0f,1280f,720f,
-                        new int[]{0xff101924,0xff080D14,0xff05080D},null,Shader.TileMode.CLAMP));
-                c.drawRect(0f,0f,1280f,720f,paint);
-                paint.setShader(null);
-                // Acento lateral discreto, sem iluminação pulsante para não distrair à noite.
-                paint.setColor(accent);
-                c.drawRoundRect(68f,104f,74f,584f,3f,3f,paint);
-                paint.setTextAlign(Paint.Align.LEFT);
-                paint.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL));
-                paint.setColor(0xffD5E1EB);
-                paint.setTextSize(26f);
-                c.drawText("PEUGEOT",100f,118f,paint);
-                paint.setTypeface(Typeface.create("sans-serif-light",Typeface.NORMAL));
-                paint.setColor(accent);
-                paint.setTextSize(34f);
-                c.drawText("308",264f,119f,paint);
-                paint.setColor(0xff3B4755);
-                paint.setStrokeWidth(1f);
-                c.drawLine(100f,142f,1180f,142f,paint);
-
-                Calendar now = Calendar.getInstance();
-                String hour=new SimpleDateFormat("HH:mm",new Locale("pt","BR")).format(now.getTime());
-                String date=new SimpleDateFormat("EEEE, dd 'de' MMMM",new Locale("pt","BR")).format(now.getTime());
-                paint.setTypeface(Typeface.create("sans-serif-thin",Typeface.NORMAL));
-                paint.setColor(0xffF2F5F9);
-                paint.setTextSize(154f);
-                while(paint.getTextSize()>120f && paint.measureText(hour)>560f)
-                    paint.setTextSize(paint.getTextSize()-2f);
-                c.drawText(hour,101f,362f,paint);
-                paint.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL));
-                paint.setColor(accent);
-                paint.setTextSize(20f);
-                c.drawText("HORA LOCAL",106f,218f,paint);
-                paint.setTypeface(Typeface.create("sans-serif",Typeface.NORMAL));
-                paint.setTextSize(29f);
-                paint.setColor(0xffAEBECC);
-                c.drawText(date,108f,431f,paint);
-                paint.setColor(0xff4E5D69);
-                paint.setTextSize(17f);
-                c.drawText("TELA DE DESCANSO",108f,511f,paint);
-
-                // Card de mídia no estilo dos painéis da Home, com cantos e contornos suaves.
-                float px=725f,py=181f,pw=486f,ph=373f;
-                paint.setColor(0xff141D28);
-                c.drawRoundRect(px,py,px+pw,py+ph,26f,26f,paint);
-                paint.setStyle(Paint.Style.STROKE);
-                paint.setStrokeWidth(1.6f);
-                paint.setColor(0xff354453);
-                c.drawRoundRect(px,py,px+pw,py+ph,26f,26f,paint);
-                paint.setStyle(Paint.Style.FILL);
-                paint.setColor(accent);
-                c.drawRoundRect(px+28f,py+30f,px+32f,py+68f,2f,2f,paint);
-                paint.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL));
-                paint.setTextSize(17f);
-                paint.setColor(0xffA6B6C5);
-                c.drawText("TOCANDO AGORA",px+49f,py+55f,paint);
-
-                final float coverX=px+30f,coverY=py+95f,coverSide=171f;
-                paint.setColor(0xff273442);
-                c.drawRoundRect(coverX,coverY,coverX+coverSide,coverY+coverSide,18f,18f,paint);
-                if(albumArt!=null&&!albumArt.isRecycled()){
-                    c.save();
-                    Path shape=new Path();
-                    shape.addRoundRect(coverX,coverY,coverX+coverSide,coverY+coverSide,18f,18f,Path.Direction.CW);
-                    c.clipPath(shape);
-                    int bw=albumArt.getWidth(),bh=albumArt.getHeight();
-                    int side=Math.min(bw,bh);
-                    if(side>0)c.drawBitmap(albumArt,
-                            new Rect((bw-side)/2,(bh-side)/2,(bw+side)/2,(bh+side)/2),
-                            new RectF(coverX,coverY,coverX+coverSide,coverY+coverSide),paint);
-                    c.restore();
-                }else{
-                    paint.setTextAlign(Paint.Align.CENTER);
-                    paint.setTextSize(72f);
-                    paint.setColor(0xff889DB0);
-                    c.drawText("♫",coverX+coverSide/2f,coverY+coverSide*.70f,paint);
-                    paint.setTextAlign(Paint.Align.LEFT);
-                }
-
-                boolean hasTrack=(mediaCtl!=null||cachedSpotifyPreview)&&songTitle!=null
-                        && !songTitle.trim().isEmpty()&&!songTitle.equals("Nenhuma música em reprodução");
-                String track=hasTrack?songTitle.trim():"Nenhuma música";
-                String artist=hasTrack&&songArtist!=null?songArtist.trim():"Aguardando reprodução";
-                // Até duas linhas para o título sem cortar a faixa nem sobrepor o artista.
-                float tx=px+222f,ty=py+153f,maxWidth=pw-250f;
+                paint.setTextAlign(Paint.Align.CENTER);
                 paint.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL));
                 paint.setTextSize(25f);
-                paint.setColor(0xffF1F5F9);
-                String first=track,second="";
-                if(paint.measureText(track)>maxWidth){
-                    int split=0;
-                    for(int i=1;i<=track.length();i++){
-                        if(paint.measureText(track.substring(0,i))>maxWidth)break;
-                        split=i;
-                    }
-                    int space=track.lastIndexOf(' ',split);
-                    if(space>split/2)split=space;
-                    first=track.substring(0,Math.max(1,split)).trim();
-                    second=track.substring(Math.max(1,split)).trim();
-                    while(!second.isEmpty()&&paint.measureText(second)>maxWidth && second.length()>2)
-                        second=second.substring(0,second.length()-2).trim()+"…";
-                }
-                c.drawText(first,tx,ty,paint);
-                if(!second.isEmpty())c.drawText(second,tx,ty+33f,paint);
+                paint.setLetterSpacing(.13f);
+                paint.setColor(0xffACB3B9);
+                c.drawText("PEUGEOT",640f,155f,paint);
+                paint.setLetterSpacing(0f);
+                paint.setTextSize(24f);
+                paint.setColor(0xff7B828A);
+                c.drawText("308",640f,194f,paint);
+                Calendar now=Calendar.getInstance();
+                Locale loc=new Locale("pt","BR");
+                String hour=new SimpleDateFormat("HH:mm",loc).format(now.getTime());
+                String date=new SimpleDateFormat("EEEE, dd 'de' MMMM",loc)
+                        .format(now.getTime()).toUpperCase(loc);
+                paint.setTypeface(Typeface.create("sans-serif-thin",Typeface.NORMAL));
+                paint.setColor(0xffF4F5F6);
+                paint.setTextSize(208f);
+                while(paint.getTextSize()>150f&&paint.measureText(hour)>1020f)
+                    paint.setTextSize(paint.getTextSize()-2f);
+                c.drawText(hour,640f,428f,paint);
                 paint.setTypeface(Typeface.create("sans-serif",Typeface.NORMAL));
-                paint.setColor(0xffABBBCB);
-                paint.setTextSize(19f);
-                while(paint.getTextSize()>14f&&paint.measureText(artist)>maxWidth)
+                paint.setTextSize(27f);
+                paint.setColor(0xff90979E);
+                while(paint.getTextSize()>18f&&paint.measureText(date)>1000f)
                     paint.setTextSize(paint.getTextSize()-1f);
-                c.drawText(artist,tx,ty+(second.isEmpty()?48f:78f),paint);
-
-                // Progresso de reprodução não interfere no volume nem nos comandos.
-                float barX=px+30f,barY=py+314f,barW=pw-60f;
-                paint.setColor(0xff3B4A58);
-                c.drawRoundRect(barX,barY,barX+barW,barY+6f,3f,3f,paint);
-                if(hasTrack&&songDuration>0){
-                    float progress=Math.max(0f,Math.min(1f,livePosition()/(float)songDuration));
-                    paint.setColor(accent);
-                    c.drawRoundRect(barX,barY,barX+barW*progress,barY+6f,3f,3f,paint);
-                }
-                paint.setTypeface(Typeface.create("sans-serif",Typeface.NORMAL));
-                paint.setTextSize(15f);
-                paint.setColor(0xff8193A5);
-                c.drawText(hasTrack&&songDuration>0?timeString(livePosition()):"--:--",barX,barY+29f,paint);
-                paint.setTextAlign(Paint.Align.RIGHT);
-                c.drawText(hasTrack&&songDuration>0?timeString(songDuration):"--:--",barX+barW,barY+29f,paint);
-                paint.setTextAlign(Paint.Align.LEFT);
-
-                paint.setColor(0xff394A5A);
-                paint.setStrokeWidth(1f);
-                c.drawLine(100f,615f,1180f,615f,paint);
-                paint.setTypeface(Typeface.create("sans-serif",Typeface.NORMAL));
-                paint.setTextSize(18f);
-                paint.setColor(0xff8395A6);
-                c.drawText("Toque em qualquer lugar para voltar",100f,657f,paint);
-                paint.setTextAlign(Paint.Align.RIGHT);
-                paint.setColor(accent);
-                c.drawText("308  •  OEM",1178f,657f,paint);
+                c.drawText(date,640f,504f,paint);
+                paint.setTextSize(16f);
+                paint.setColor(0xff4E555C);
+                c.drawText("TOQUE PARA VOLTAR",640f,663f,paint);
                 c.restore();
             }
         };
@@ -4431,7 +4322,13 @@ public class MainActivity extends Activity {
             float wm = measure(brandTitle, brandFont, tfBold, .025f), w308 = 0, gx = 32 + wm;
             long sm = SystemClock.uptimeMillis() % SHINE_PERIOD; // brilho que corre pelo logo a cada poucos segundos
             float sweep = sm < SHINE_MS ? 10 + (sm / (float) SHINE_MS) * (wm + w308 + 70) : Float.NaN;
-            shineText(brandTitle, 32, 47, brandFont, cText, accent, tfBold, .025f, sweep);
+            // Brilho perceptível mesmo quando os botões e as letras são brancos no tema preto.
+            int logoBase=cText, logoShine=accent;
+            if(Math.abs(lum(cText)-lum(accent))<.22f){
+                if(lum(cText)>.64f){logoBase=0xffA5ACB7;logoShine=Color.WHITE;}
+                else logoShine=0xffE3E8EE;
+            }
+            shineText(brandTitle,32,47,brandFont,logoBase,logoShine,tfBold,.025f,sweep);
             hit(51, 23, 7, wm + 16, 58); // toque no logotipo abre a tela de descanso
             float dvx = gx + w308 + 14;
             if (topWidgetEnabled) ln(dvx, 22, dvx, 50, cHair, 1.5f);
