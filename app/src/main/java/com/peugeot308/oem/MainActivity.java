@@ -388,7 +388,8 @@ public class MainActivity extends Activity {
     private void showVehicleSourceStatus() {
         String status = vehicleDataSource == 0
            ? ("CANBUS original: "+canbusApiStatus+"\nLeitura válida recente: "+hasCanData()+"\n\n"+
-               (jancarBridge == null ? "Serviço Jancar indisponível" : jancarBridge.diagnostic()))
+               (canbusReader==null?"Leitor CAN não iniciado":canbusReader.diagnostic())
+               +"\n"+(jancarBridge == null ? "Serviço Jancar indisponível" : jancarBridge.diagnostic()))
            : ("Fonte: OBD2 Bluetooth\nAdaptador: "+(obdAddress.isEmpty()?"não selecionado":obdAddress)
                +"\nEstado: "+obdState+"\nDados recentes: "+hasCanData());
         ScrollView scroll = new ScrollView(this);
@@ -2491,6 +2492,10 @@ public class MainActivity extends Activity {
         b.append("Áudio atual: ").append(audioSnapshot()).append('\n');
         b.append("--- SERVIÇO JANCAR ---\n");
         b.append(jancarBridge == null ? "Não iniciado" : jancarBridge.diagnostic()).append('\n');
+        b.append("--- CANBOX ORIGINAL ---\n");
+        b.append(canbusReader == null ? "Não iniciado" : canbusReader.diagnostic()).append('\n');
+        b.append("--- AUDIO OEM ---\n");
+        b.append(oemSoundInventory()).append('\n');
         b.append("Nota: vínculo com IVI Car não confirma valores CAN, e estado do EQ não confirma efeito audível.\n");
         return b.toString();
     }
@@ -2679,16 +2684,51 @@ public class MainActivity extends Activity {
             snack("Botão personalizado: " + labels[index]);
         });
     }
+    /** Inventário passivo de atividades de áudio que o Android permite enxergar.
+     *  Não envia comandos proprietários nem confunde encontrar app com controlá-lo. */
+    private String oemSoundInventory() {
+        StringBuilder b=new StringBuilder("Apps de áudio visíveis no Android:\n");
+        try{
+            Intent query=new Intent(Intent.ACTION_MAIN);
+            query.addCategory(Intent.CATEGORY_LAUNCHER);
+            List<android.content.pm.ResolveInfo> apps=getPackageManager().queryIntentActivities(query,0);
+            int found=0;
+            if(apps!=null)for(android.content.pm.ResolveInfo info:apps){
+                if(info.activityInfo==null)continue;
+                String label=info.loadLabel(getPackageManager()).toString();
+                String pkg=info.activityInfo.packageName;
+                String search=(label+" "+pkg+" "+info.activityInfo.name).toLowerCase(Locale.ROOT);
+                if(!(search.contains("equaliz")||search.contains("dsp")||
+                        search.contains("sound")||search.contains("audio")||
+                        search.contains("áudio")||search.contains("som ")||
+                        search.contains("mixer")||search.endsWith(".eq")))continue;
+                b.append("• ").append(label).append(" [").append(pkg).append("]\n");
+                b.append("  activity: ").append(info.activityInfo.name).append('\n');
+                found++;
+                if(found>=20){b.append("(mais aplicativos não listados)\n");break;}
+            }
+            if(found==0)b.append("Nenhum app com nome de som/EQ/DSP publicado na lista de aplicativos.\n");
+        }catch(Exception ex){
+            b.append("Consulta indisponível: ").append(ex.getClass().getSimpleName()).append('\n');
+        }
+        b.append("Observação: componentes OEM internos podem não aparecer nesta lista.\n");
+        return b.toString();
+    }
     private void showAudioDiagnostic() {
         String detail;
         try {
-            detail = "Volume Android fixo: " + (audio.isVolumeFixed() ? "SIM" : "NÃO") +
-                "\nVolume mídia: " + audio.getStreamVolume(AudioManager.STREAM_MUSIC) +
+            detail = "Volume fixo no Android: " + (audio.isVolumeFixed() ? "SIM" : "NÃO") +
+                "\nVolume de mídia: " + audio.getStreamVolume(AudioManager.STREAM_MUSIC) +
                 " / " + audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC) +
+                "\nMute Android: " + audio.isStreamMute(AudioManager.STREAM_MUSIC) +
                 "\nÚltimo ajuste: " + audioStatus +
-                "\nA central Jancar pode usar volume separado na MCU. Este app não tem API OEM validada para alterá-lo.";
-        } catch(Exception e) { detail = "Falha ao consultar o sistema: " + e.getMessage(); }
-        new AlertDialog.Builder(this).setTitle("Diagnóstico de áudio")
+                "\nEqualizador Android: " + (snd==null?"não iniciado":snd.statusLine()) +
+                "\n\n" + oemSoundInventory() +
+                "\nBalanço e fader só enviam o broadcast próprio do launcher: "
+                + "nenhum receptor DSP/MCU original foi confirmado. "
+                + "Equalizador criado no Android não garante efeito audível nos alto-falantes.";
+        } catch(Exception e) { detail = "Falha ao consultar o sistema: " + e.getClass().getSimpleName(); }
+        new AlertDialog.Builder(this).setTitle("Jancar • diagnóstico de áudio")
             .setMessage(detail).setPositiveButton("Fechar", null).show();
     }
     /** Tela de descanso minimalista. Sem WakeLock: respeita a suspensao da central. */
