@@ -2856,20 +2856,10 @@ public class MainActivity extends Activity {
                 c.translate((w-1280f*scale)/2f,(h-720f*scale)/2f);
                 c.scale(scale,scale);
 
-                // Preto grafite com iluminacao fixa muito sutil.
-                // Sem animação ou efeitos por frame: leve para a Jancar.
+                // Fundo preto puro para uso noturno. Sem degradê nem iluminação.
+                // Preserve todos os elementos, tipografia, barras e controles.
                 paint.reset();
                 paint.setAntiAlias(true);
-                paint.setShader(new LinearGradient(0f,0f,0f,720f,
-                        new int[]{0xff090C11,0xff010205,0xff0B0E14},
-                        new float[]{0f,.48f,1f},Shader.TileMode.CLAMP));
-                c.drawRect(0f,0f,1280f,720f,paint);
-                paint.setShader(null);
-                paint.setShader(new RadialGradient(640f,315f,560f,
-                        new int[]{0x164A617A,0x05515C72,0x00000000},
-                        new float[]{0f,.48f,1f},Shader.TileMode.CLAMP));
-                c.drawCircle(640f,315f,560f,paint);
-                paint.setShader(null);
 
                 // Logo tipografico em duas espessuras, centralizado pelo tamanho real.
                 paint.setStyle(Paint.Style.FILL);
