@@ -221,9 +221,8 @@ public class MainActivity extends Activity {
     private long fadeWindowUntil = 0, screenOffAt = 0;
     private static boolean bootArmed = false;
     private BroadcastReceiver screenReceiver;
-    private boolean drivingEnabled = true, drivingMode = false;
-    private int drivingThreshold = 10, drvAbove = 0, drvBelow = 0, drvLost = 0;
-    private long drivingTestUntil = 0;
+    // Sem bloqueio de menus por velocidade GPS/CAN. Preserva toda a navegação.
+    private final boolean drivingMode = false;
     private Dialog activeDialog;
     private Dialog quickDialog; // Diálogo rápido; correção do erro de compilação v1.44
     private SoundEngine snd;      // v1.14: motor de som (equalizador, loudness, volume por velocidade)
@@ -447,7 +446,7 @@ public class MainActivity extends Activity {
         @Override public void onProviderEnabled(String provider) {}
         @Override public void onProviderDisabled(String provider) {}
     };
-    private boolean needGps() { return weatherAuto || vehicleMenuEnabled || topWidgetEnabled || drivingEnabled || speedAlert || speedPreferGps || (snd != null && snd.autoVolOn) || (pardalRadar != null && pardalRadar.mode()!=PardalRadar.OFF); }
+    private boolean needGps() { return weatherAuto || vehicleMenuEnabled || topWidgetEnabled || speedAlert || speedPreferGps || (snd != null && snd.autoVolOn) || (pardalRadar != null && pardalRadar.mode()!=PardalRadar.OFF); }
     private boolean gpsFresh() { return gpsLastFix > 0 && SystemClock.elapsedRealtime() - gpsLastFix < 6000; }
     private void startGps() {
         if (gpsRunning || !needGps()) return;
@@ -758,8 +757,6 @@ public class MainActivity extends Activity {
             prefs.edit().putBoolean("fade_boot", false).putBoolean("audio_147_migrated", true).apply();
         }
         fadeBoot = prefs.getBoolean("fade_boot", false);
-        drivingEnabled = prefs.getBoolean("driving_mode", true);
-        drivingThreshold = Math.max(5, Math.min(60, prefs.getInt("driving_kmh", 10)));
         speedAlert = prefs.getBoolean("speed_alert", false);
         speedLimit = Math.max(30, Math.min(220, prefs.getInt("speed_limit", 110)));
         speedWarningMode = Math.max(0, Math.min(3, prefs.getInt("speed_warning_mode", speedAlert ? 3 : 1)));
@@ -1290,30 +1287,9 @@ public class MainActivity extends Activity {
         }
     };
 
-    // ---- Modo direção ----
-    private void updateDrivingMode() {
-        boolean before = drivingMode;
-        if (drivingTestUntil > 0) {
-            if (SystemClock.uptimeMillis() < drivingTestUntil) drivingMode = true;
-            else { drivingTestUntil = 0; drivingMode = false; drvAbove = 0; drvBelow = 0; drvLost = 0; }
-        } else if (!drivingEnabled) {
-            drivingMode = false;
-        } else {
-            String sv = vehicleValue(0);
-            if (sv == null) { if (++drvLost > 60) drivingMode = false; } // túnel/sem GPS: mantém por 1 min
-            else {
-                drvLost = 0; float v = 0;
-                try { v = Float.parseFloat(sv); } catch (Exception ignored) {}
-                if (v >= drivingThreshold) { drvAbove++; drvBelow = 0; if (drvAbove >= 2) drivingMode = true; }
-                else if (v < Math.max(3f, drivingThreshold * 0.4f)) { drvBelow++; drvAbove = 0; if (drvBelow >= 6) drivingMode = false; } // 6 s parado
-                else drvAbove = 0;
-            }
-        }
-        if (drivingMode != before) {
-            if (drivingMode && activeDialog != null) { try { activeDialog.dismiss(); } catch (Exception ignored) {} }
-            if (dashboard != null) dashboard.invalidate();
-        }
-    }
+    // Antigo modo direção desativado permanentemente: não bloquear toques ou menus.
+    // Mantemos o método porque o monitor periódico já o chama.
+    private void updateDrivingMode() { }
 
     // ---- Waze: Casa / Trabalho ----
     private void openWazeDestination(boolean home) {
@@ -3204,15 +3180,6 @@ public class MainActivity extends Activity {
                         speedPreferGps=checked;getPreferences(0).edit().putBoolean("speed_prefer_gps",checked).apply();refreshGpsNeed();dashboard.invalidate();
                     });
                     divider(box);
-                    box.addView(label("Modo direção", 14, accent, true));
-                    switchRow(box, "Esconder apps e configurações em movimento", drivingEnabled, (v, checked) -> {
-                        drivingEnabled = checked; getPreferences(0).edit().putBoolean("driving_mode", checked).apply(); refreshGpsNeed();
-                    });
-                    stepperRow(box, "Ativa acima de", drivingThreshold, 5, 40, 5, " km/h", val -> { drivingThreshold = val; getPreferences(0).edit().putInt("driving_kmh", val).apply(); });
-                    LinearLayout testRow = new LinearLayout(this); testRow.setPadding(0, dp(6), 0, dp(6)); box.addView(testRow);
-                    actionButton(testRow, "Testar modo direção (15 s)", () -> { drivingTestUntil = SystemClock.uptimeMillis() + 15000L; updateDrivingMode(); });
-                    box.addView(label("Fica ativo ao passar do limite (via GPS) e sai após 6 s parado. Mantém Waze, Rádio, Spotify, Telefone, Casa e Trabalho.", 12, cMuted, false));
-                    divider(box);
                     box.addView(label("O painel pode mostrar 1, 2 ou 3 cards. O terceiro fica desligado com 1 ou 2 cards; os mini-cards superiores são independentes.", 12, cMuted, false));
                     break;
                 }
@@ -4488,11 +4455,8 @@ public class MainActivity extends Activity {
                 at+=itemW+spacing;
             }
             noHit = false;
-            if (drivingMode) {
-                rr(at,10,itemW,52,13,mix(cSurf2,accent,.22f));
-                rrs(at,10,itemW,52,13,cHair,1f);
-                text("DIR.",at+itemW/2,40,11,cText,tfBold,Paint.Align.CENTER,.02f);
-            } else topPill(6,at,itemW,I_GEAR,"Config",true);
+            // Configurações sempre visíveis, inclusive em movimento.
+            topPill(6,at,itemW,I_GEAR,"Config",true);
         }
 
         // v1.23: cards do modo recolhido usam a MESMA grade, sem deformar conteúdo.
