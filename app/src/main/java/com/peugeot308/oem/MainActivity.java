@@ -4117,6 +4117,11 @@ public class MainActivity extends Activity {
             text(label, x, y, 15, cDim, tfBold, Paint.Align.LEFT, .08f);
             t(fit(value, 24, tfMed, 136), x, y + 28, 24, cText, tfMed);
         }
+        // Informações complementares menores, sem alterar temperatura e máxima/mínima.
+        void statCellCompact(float x, float y, String label, String value) {
+            text(label, x, y, 12, cDim, tfBold, Paint.Align.LEFT, .05f);
+            t(fit(value, 18, tfMed, 134), x, y + 27, 18, cMuted, tfMed);
+        }
         void tile(float x, float y, float w, float h, String label, String value, String unit) {
             rr(x, y, w, h, 16, cSurf2);
             text(label, x + w / 2, y + 27, 14, cDim, tfBold, Paint.Align.CENTER, .06f);
@@ -4407,13 +4412,13 @@ public class MainActivity extends Activity {
                 t(weatherLine,cx-20,y+347,Math.min(50,w*.115f),cText,tfBold);
                 float dx = w>500?124:100;
                 text("MÁX / MÍN",cx-dx,y+423,13,cDim,tfBold,Paint.Align.LEFT,0);
-                text("CHUVA",cx+12,y+423,13,cDim,tfBold,Paint.Align.LEFT,0);
+                text("CHUVA",cx+12,y+423,11,cDim,tfBold,Paint.Align.LEFT,0);
                 t(fit(weatherHigh+" / "+weatherLow,19,tfMed,dx+4),cx-dx,y+449,19,cText,tfMed);
-                t(fit(weatherRain,19,tfMed,dx-18),cx+12,y+449,19,cText,tfMed);
-                text("VENTO",cx-dx,y+499,13,cDim,tfBold,Paint.Align.LEFT,0);
-                text("UMIDADE",cx+12,y+499,13,cDim,tfBold,Paint.Align.LEFT,0);
-                t(fit(weatherWind,19,tfMed,dx+4),cx-dx,y+525,19,cText,tfMed);
-                t(fit(weatherHumidity,19,tfMed,dx-18),cx+12,y+525,19,cText,tfMed);
+                t(fit(weatherRain,16,tfMed,dx-18),cx+12,y+449,16,cMuted,tfMed);
+                text("VENTO",cx-dx,y+499,11,cDim,tfBold,Paint.Align.LEFT,0);
+                text("UMIDADE",cx+12,y+499,11,cDim,tfBold,Paint.Align.LEFT,0);
+                t(fit(weatherWind,16,tfMed,dx+4),cx-dx,y+525,16,cMuted,tfMed);
+                t(fit(weatherHumidity,16,tfMed,dx-18),cx+12,y+525,16,cMuted,tfMed);
             }
             hit(30,x,y+180,w,h-180);
         }
@@ -4673,9 +4678,9 @@ public class MainActivity extends Activity {
                 weatherIcon(weatherCode, x + 68, 402, 74);
                 t(fit(weatherLine, 55, tfBold, 195), x + 126, 416, 55, cText, tfBold);
                 statCell(x + 24, 438, "MÁX / MÍN", weatherHigh + " / " + weatherLow);
-                statCell(x + 174, 438, "CHUVA", weatherRain);
-                statCell(x + 24, 494, "VENTO", weatherWind);
-                statCell(x + 174, 494, "UMIDADE", weatherHumidity);
+                statCellCompact(x + 174, 438, "CHUVA", weatherRain);
+                statCellCompact(x + 24, 494, "VENTO", weatherWind);
+                statCellCompact(x + 174, 494, "UMIDADE", weatherHumidity);
             }
             hit(30, x, 268, w, y + h - 268);
         }
@@ -4838,20 +4843,45 @@ public class MainActivity extends Activity {
             if(pardalRadar==null||!pardalRadar.active())return;
             int d=pardalRadar.distance(), lim=pardalRadar.limit();
             boolean over=pardalRadar.over();
-            float x=388,y=87,w=504,h=154;
-            rr(x,y,w,h,20,0xff17212D);
-            rrs(x,y,w,h,20,over?0xffF26B67:0xff477D8B,2);
-            rr(x+18,y+17,112,112,16,0xffF9FAFB);
-            circle(x+74,y+73,47,0xffE03B3B);
-            circle(x+74,y+73,40,Color.WHITE);
-            text(lim>0?String.valueOf(lim):"?",x+74,y+86,43,Color.BLACK,tfBold,Paint.Align.CENTER,0);
-            text(pardalRadar.kind(),x+151,y+36,17,0xffE2E8F0,tfBold,Paint.Align.LEFT,.03f);
-            text(d+" m",x+151,y+90,49,Color.WHITE,tfBold,Paint.Align.LEFT,0);
-            text("ATUAL "+pardalRadar.speed()+" km/h",x+151,y+123,18,over?0xffFF7777:0xff77DDAA,tfBold,Paint.Align.LEFT,0);
-            if(over)text("REDUZA",x+w-17,y+35,15,0xffFF7777,tfBold,Paint.Align.RIGHT,0);
-            rr(x+148,y+h-9,w-164,4,2,0xff394653);
-            rr(x+148,y+h-9,(w-164)*Math.max(0f,Math.min(1f,(350f-d)/350f)),4,2,
-                    over?0xffFF7777:0xff77DDAA);
+            // Popup centralizado na tela 1280 x 720, sem deslocar os demais cards.
+            final float w=560f,h=224f,x=(1280f-w)/2f,y=(720f-h)/2f;
+            int lineColor=over?0xffFA7069:0xff4CB8C9;
+            int secondary=0xffAEBFCB;
+
+            // Sombra, painel e acabamento discretos no padrão noturno do launcher.
+            rr(x+8,y+12,w,h,26,0x77000000);
+            rr(x,y,w,h,26,0xff15202B);
+            rrs(x,y,w,h,26,over?0xff9B494B:0xff486C7D,1.6f);
+            rr(x+20,y+19,5,147,2.5f,lineColor);
+
+            // Placa real de limite de velocidade, em tamanho legível.
+            float signX=x+38,signY=y+27,signW=124,signH=137;
+            rr(signX,signY,signW,signH,19,0xffF0F3F5);
+            circle(signX+signW/2f,signY+signH/2f,48,0xffE23838);
+            circle(signX+signW/2f,signY+signH/2f,40,Color.WHITE);
+            String displayedLimit=lim>0?String.valueOf(lim):"?";
+            float limFont=displayedLimit.length()>3?31f:displayedLimit.length()>2?38f:44f;
+            text(displayedLimit,signX+signW/2f,signY+signH/2f+limFont*.34f,
+                    limFont,Color.BLACK,tfBold,Paint.Align.CENTER,0);
+
+            // Hierarquia OEM: tipo, distância dominante, velocidade atual.
+            float infoX=x+186;
+            text(fit(pardalRadar.kind(),17,tfBold,over?199f:346f),
+                    infoX,y+52,17,secondary,tfBold,Paint.Align.LEFT,.04f);
+            if(over)text("REDUZA",x+w-24,y+52,15,0xffFF7770,
+                    tfBold,Paint.Align.RIGHT,.06f);
+            text(d+" m",infoX,y+119,58,Color.WHITE,tfBold,Paint.Align.LEFT,0);
+            text("ATUAL  "+pardalRadar.speed()+" km/h",infoX,y+157,19,
+                    over?0xffFF8B83:0xff79D7C1,tfMed,Paint.Align.LEFT,0);
+
+            // Barra de aproximação de 350 a 0 m: sem excesso de elementos.
+            float barX=x+25,barY=y+185,barW=w-50f;
+            rr(barX,barY,barW,6f,3f,0xff33424D);
+            rr(barX,barY,barW*Math.max(0f,Math.min(1f,(350f-d)/350f)),
+                    6f,3f,lineColor);
+            text("APROXIMAÇÃO",barX,y+210,12,0xff8497A7,tfMed,Paint.Align.LEFT,.04f);
+            text("350 m  →  0 m",x+w-25,y+210,12,0xff8497A7,
+                    tfMed,Paint.Align.RIGHT,0);
         }
         void drawAlertPopup() {
             long now = SystemClock.uptimeMillis();
