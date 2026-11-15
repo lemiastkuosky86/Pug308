@@ -277,6 +277,10 @@ public class MainActivity extends Activity {
     private int lastSettingsTab = 0;
     private final int[] lastSettingsScroll = new int[7];
     private boolean canConnected = false;
+    private CanbusVehicleReader canbusReader;
+    private CanbusVehicleReader.Snapshot canbusSnapshot;
+    private String canbusApiStatus = "Ainda não consultado";
+    private int observedOpenDoors = 0; // evita declarar fechado sem ter observado sinal válido
     private long lastCanPacket = 0;
     // Card principal do veículo: exatamente 2 ou 3 indicadores escolhidos pelo usuário.
     // As opções permanecem salvas; os valores GPS da sessão nunca são gravados em disco.
@@ -299,13 +303,53 @@ public class MainActivity extends Activity {
             ? obdReader != null && obdReader.isLive()
             : canConnected && SystemClock.elapsedRealtime() - lastCanPacket < 10000;
     }
+    /** Leitura somente do decodificador CAN original. Valores ausentes não são substituídos por estados inventados. */
+    private void acceptCanbusSnapshot(CanbusVehicleReader.Snapshot data,String state){
+        canbusApiStatus=state;
+        if(data==null){if(dashboard!=null)dashboard.invalidate();return;}
+        canbusSnapshot=data;
+        if(vehicleDataSource!=0){if(dashboard!=null)dashboard.invalidate();return;}
+        int[] d=data.dashboardInts;
+        float[] f=data.dashboardFloats;
+        // Só consideramos a API como fonte útil quando há telemetria plausível,
+        // não simplesmente quando Binder responde com uma estrutura zerada.
+        boolean real=false;
+        if(d!=null && d.length>=7){
+            if(d[3]>=300&&d[3]<=9000){vehicleValues[4]=String.valueOf(d[3]);real=true;}
+            if(d[4]>0&&d[4]<=250){vehicleValues[0]=String.valueOf(d[4]);real=true;}
+            if(d[2]>0&&d[2]<=3000){vehicleValues[1]=String.valueOf(d[2]);real=true;}
+        }
+        if(f!=null&&f.length>=8){
+            if(Float.isFinite(f[1])&&f[1]>0f&&f[1]<=100f){
+                vehicleValues[3]=String.format(Locale.getDefault(),"%.0f",f[1]);real=true;
+            }
+            if(Float.isFinite(f[4])&&f[4]>20f&&f[4]<150f){
+                vehicleValues[9]=String.format(Locale.getDefault(),"%.0f",f[4]);real=true;
+            }
+            if(Float.isFinite(f[7])&&f[7]>-40f&&f[7]<70f&&Math.abs(f[7])>0.01f){
+                vehicleValues[2]=String.format(Locale.getDefault(),"%.1f",f[7]);real=true;
+            }
+        }
+        if(data.cabin!=null&&data.cabin.length>=17){
+            int opened=0;
+            for(int i=1;i<=5;i++)if(data.cabin[i]==1){opened|=1<<(i-1);observedOpenDoors|=1<<(i-1);}
+            if(opened!=0){vehicleValues[5]="ABERTA";real=true;}
+            else if(observedOpenDoors!=0){vehicleValues[5]="FECHADAS";real=true;}
+            if(opened!=0)logField("CAN","abertura_observada_mascara="+opened);
+        }
+        if(real){canConnected=true;lastCanPacket=SystemClock.elapsedRealtime();}
+        if(dashboard!=null)dashboard.invalidate();
+    }
+
     private void useDataSource(int source) {
         vehicleDataSource = source;
         getPreferences(0).edit().putInt("vehicle_source", source).apply();
         if(obdReader != null) obdReader.stop();
         obdLive = false;
         Arrays.fill(vehicleValues, "--");
+        canConnected=false;
         if(source == 1 && obdReader != null && !obdAddress.isEmpty()) obdReader.start(obdAddress);
+        if(source==0&&canbusSnapshot!=null)acceptCanbusSnapshot(canbusSnapshot,canbusApiStatus);
         if(dashboard != null) dashboard.invalidate();
     }
     private void chooseObdAdapter() {
@@ -328,7 +372,8 @@ public class MainActivity extends Activity {
     }
     private void showVehicleSourceStatus() {
         String status = vehicleDataSource == 0
-           ? (jancarBridge == null ? "Serviço Jancar indisponível" : jancarBridge.diagnostic())
+           ? ("CANBUS original: "+canbusApiStatus+"\nLeitura válida recente: "+hasCanData()+"\n\n"+
+               (jancarBridge == null ? "Serviço Jancar indisponível" : jancarBridge.diagnostic()))
            : ("Fonte: OBD2 Bluetooth\nAdaptador: "+(obdAddress.isEmpty()?"não selecionado":obdAddress)
                +"\nEstado: "+obdState+"\nDados recentes: "+hasCanData());
         ScrollView scroll = new ScrollView(this);
@@ -788,6 +833,8 @@ public class MainActivity extends Activity {
         restoreLastSpotifyPreview();
         jancarBridge = new JancarBridge(this, () -> handler.post(() -> { if (dashboard != null) dashboard.invalidate(); }));
         handler.postDelayed(() -> { if (!isFinishing() && jancarBridge != null) jancarBridge.start(); }, 300L);
+        canbusReader = new CanbusVehicleReader(this, this::acceptCanbusSnapshot);
+        handler.postDelayed(() -> { if (!isFinishing() && canbusReader != null) canbusReader.start(); }, 600L);
         handler.postDelayed(() -> { if (!isFinishing() && snd != null) snd.start(); }, 380L);
         obdReader = new ObdBluetoothReader((values, live, stateText) -> {
             obdState = stateText; obdLive = live;
@@ -876,6 +923,7 @@ public class MainActivity extends Activity {
         try { if (eqDialog != null) eqDialog.dismiss(); } catch (Exception ignored) {}
         if (snd != null) snd.saveNow();
         if (jancarBridge != null) jancarBridge.stop();
+        if (canbusReader != null) canbusReader.stop();
         if (obdReader != null) obdReader.stop();
         try { if (downloadReceiver != null) unregisterReceiver(downloadReceiver); } catch (Exception ignored) {}
         if (mediaCtl != null) mediaCtl.unregisterCallback(mediaCallback);
@@ -2341,7 +2389,8 @@ public class MainActivity extends Activity {
         b.append("Brilho: ").append(brightnessModeName()).append(" • ").append(brightnessPercent()).append("% • Botão visível: ").append(topBrightnessVisible ? "SIM" : "NÃO").append('\n');
         b.append("Fonte do veículo: ").append(vehicleDataSource==1?"OBD2 Bluetooth":"Jancar CANBOX").append('\n');
         if(vehicleDataSource==1)b.append("OBD2: ").append(obdState).append('\n');
-        b.append("CAN/OBD telemetria: ").append(hasCanData() ? "válida" : "não disponível").append('\n');
+        b.append("CAN/OBD telemetria: ").append(hasCanData() ? "com valores plausíveis" : "não confirmada").append('\n');
+        b.append("CANBUS OEM: ").append(canbusApiStatus).append('\n');
         b.append("Widget veículo: ").append(vehicleMenuEnabled ? "ligado" : "desligado").append('\n');
         b.append("Cards do veículo: ").append(vehicleCardCount).append('\n');
         for (int i=0;i<vehicleCardCount;i++) b.append("Card ").append(i+1).append(": ").append(vehicleNames[vehicleCardSlots[i]]).append('\n');
@@ -4286,15 +4335,17 @@ public class MainActivity extends Activity {
             ln(carX+1,carY+carH*.72f,carX+carW-1,carY+carH*.72f,cHair,1f);
             // Cinza indica desconhecido; nunca usar verde/vermelho sem sinal válido.
             int unknown=cDim;
+            int[] cabinNow=(hasCanData() && canbusSnapshot!=null)?canbusSnapshot.cabin:null;
             float rad=Math.max(2f,Math.min(4f,carW*.105f));
             if (vehicleThirdVisualMode != 3 || (vehicleThirdVisualFlags & 1)!=0) {
-                circle(carX-3,carY+carH*.32f,rad,unknown);
-                circle(carX+carW+3,carY+carH*.32f,rad,unknown);
-                circle(carX-3,carY+carH*.63f,rad,unknown);
-                circle(carX+carW+3,carY+carH*.63f,rad,unknown);
+                // Vermelho só com porta efetivamente aberta (1). Cinza = não confirmado.
+                circle(carX-3,carY+carH*.32f,rad,cabinNow!=null&&cabinNow[1]==1?cBad:unknown);
+                circle(carX+carW+3,carY+carH*.32f,rad,cabinNow!=null&&cabinNow[2]==1?cBad:unknown);
+                circle(carX-3,carY+carH*.63f,rad,cabinNow!=null&&cabinNow[3]==1?cBad:unknown);
+                circle(carX+carW+3,carY+carH*.63f,rad,cabinNow!=null&&cabinNow[4]==1?cBad:unknown);
             }
             if (vehicleThirdVisualMode != 3 || (vehicleThirdVisualFlags & 2)!=0)
-                circle(carX+carW*.5f,carY+carH*.98f,rad,unknown);
+                circle(carX+carW*.5f,carY+carH*.98f,rad,cabinNow!=null&&cabinNow[5]==1?cBad:unknown);
             if (vehicleThirdVisualMode != 3 || (vehicleThirdVisualFlags & 8)!=0) {
                 circle(carX+carW*.25f,carY+3,rad*.72f,unknown);
                 circle(carX+carW*.75f,carY+3,rad*.72f,unknown);
