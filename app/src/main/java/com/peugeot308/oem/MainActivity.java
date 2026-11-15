@@ -2665,46 +2665,67 @@ public class MainActivity extends Activity {
             @Override protected void onDraw(Canvas c) {
                 super.onDraw(c);
                 float w = getWidth(), h = getHeight();
-                // Tela de descanso inspirada na linguagem automotiva, com contraste suave.
-                paint.setStyle(Paint.Style.FILL);
-                paint.setShader(new android.graphics.LinearGradient(0,0,w,h,
-                    new int[]{0xff07101b,0xff111b2a,0xff070b12},null,
-                    android.graphics.Shader.TileMode.CLAMP));
-                c.drawRect(0,0,w,h,paint);
+                // Descanso OEM: preto verdadeiro para a central à noite e tipografia legível.
+                c.drawColor(Color.BLACK);
+                float cx = w * .5f;
                 paint.setShader(null);
-                float cx=w*.5f;
-                paint.setColor(0x18ffffff);
-                paint.setStrokeWidth(Math.max(1f,h*.0016f));
-                for(int i=1;i<=4;i++){
-                    float yy=h*(.2f+i*.13f);
-                    c.drawLine(w*.12f,yy,w*.88f,yy,paint);
-                }
+                paint.setStyle(Paint.Style.FILL);
                 paint.setTextAlign(Paint.Align.CENTER);
                 paint.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL));
-                paint.setTextSize(Math.min(h*.047f,w*.055f));
+                paint.setTextSize(Math.min(h*.035f,25f*getResources().getDisplayMetrics().scaledDensity));
                 paint.setColor(accent);
-                c.drawText("P E U G E O T    3 0 8",cx,h*.17f,paint);
+                c.drawText("P E U G E O T    3 0 8", cx, h*.13f, paint);
+
                 Calendar now=Calendar.getInstance();
-                String hour=new SimpleDateFormat("HH:mm",Locale.getDefault()).format(now.getTime());
+                String hour=new SimpleDateFormat("HH:mm",new Locale("pt","BR")).format(now.getTime());
                 String date=new SimpleDateFormat("EEEE, dd 'de' MMMM",new Locale("pt","BR")).format(now.getTime());
                 paint.setTypeface(Typeface.create("sans-serif-thin",Typeface.NORMAL));
-                paint.setTextSize(Math.min(h*.33f,w*.25f));
-                paint.setColor(0xfff0f3f8);
-                float baseline=h*.47f-(paint.ascent()+paint.descent())*.5f;
-                c.drawText(hour,cx,baseline,paint);
-                paint.setColor(accent);
-                paint.setStrokeWidth(Math.max(3f,h*.007f));
-                c.drawLine(w*.34f,h*.65f,w*.66f,h*.65f,paint);
+                paint.setTextSize(Math.min(h*.29f,w*.22f));
+                paint.setColor(0xffF2F5F8);
+                c.drawText(hour,cx,h*.425f,paint);
                 paint.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL));
-                paint.setTextSize(Math.min(h*.057f,34f*getResources().getDisplayMetrics().scaledDensity));
-                paint.setColor(0xffc8d2df);
-                c.drawText(date,cx,h*.74f,paint);
+                paint.setTextSize(Math.min(h*.039f,27f*getResources().getDisplayMetrics().scaledDensity));
+                paint.setColor(0xffB6C0CA);
+                c.drawText(date,cx,h*.535f,paint);
+
+                paint.setColor(accent);
+                paint.setStrokeWidth(Math.max(2f,h*.0035f));
+                c.drawLine(w*.36f,h*.595f,w*.64f,h*.595f,paint);
+
+                boolean hasTrack=(mediaCtl!=null||cachedSpotifyPreview)&&songTitle!=null
+                        && !songTitle.trim().isEmpty()&&!songTitle.equals("Nenhuma música em reprodução");
+                if(hasTrack){
+                    String title=songTitle.trim();
+                    paint.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL));
+                    paint.setColor(0xffF7F8FB);
+                    paint.setTextSize(Math.min(h*.055f,39f*getResources().getDisplayMetrics().scaledDensity));
+                    while(paint.getTextSize()>18f && paint.measureText(title)>w*.84f)
+                        paint.setTextSize(paint.getTextSize()-1f);
+                    c.drawText(title,cx,h*.705f,paint);
+                    String artist=songArtist==null?"":songArtist.trim();
+                    paint.setTypeface(Typeface.create("sans-serif",Typeface.NORMAL));
+                    paint.setColor(0xff9DAAB7);
+                    paint.setTextSize(Math.min(h*.034f,24f*getResources().getDisplayMetrics().scaledDensity));
+                    while(paint.getTextSize()>13f && paint.measureText(artist)>w*.82f)
+                        paint.setTextSize(paint.getTextSize()-1f);
+                    c.drawText(artist,cx,h*.762f,paint);
+
+                    if(songDuration>0){
+                        float px1=w*.32f,px2=w*.68f,py=h*.82f;
+                        paint.setStrokeWidth(Math.max(3f,h*.005f));
+                        paint.setColor(0xff27323B); c.drawLine(px1,py,px2,py,paint);
+                        float fraction=Math.min(1f,Math.max(0f,livePosition()/(float)songDuration));
+                        paint.setColor(accent); c.drawLine(px1,py,px1+(px2-px1)*fraction,py,paint);
+                    }
+                }else{
+                    paint.setTypeface(Typeface.create("sans-serif",Typeface.NORMAL));
+                    paint.setTextSize(Math.min(h*.032f,20f*getResources().getDisplayMetrics().scaledDensity));
+                    paint.setColor(0xff8B99A7);
+                    c.drawText("Música em espera",cx,h*.73f,paint);
+                }
                 paint.setTypeface(Typeface.create("sans-serif",Typeface.NORMAL));
-                paint.setTextSize(Math.min(h*.034f,18f*getResources().getDisplayMetrics().scaledDensity));
-                paint.setColor(0xff78899a);
-                if(mediaPlaying&&!songTitle.isEmpty())c.drawText("♫ "+songTitle,cx,h*.83f,paint);
-                paint.setTextSize(Math.min(h*.026f,15f*getResources().getDisplayMetrics().scaledDensity));
-                paint.setColor(0xff64778a);
+                paint.setTextSize(Math.min(h*.025f,16f*getResources().getDisplayMetrics().scaledDensity));
+                paint.setColor(0xff64717D);
                 c.drawText("Toque para voltar",cx,h*.94f,paint);
             }
         };
@@ -2960,7 +2981,13 @@ public class MainActivity extends Activity {
                         });
                     }
                     divider(box);
-                    section(box, "TERCEIRO CARD • ESTADO DO CARRO", "Para desligá-lo, escolha 1 ou 2 cards acima. Com 3 cards, personalize o terceiro.");
+                    section(box, "TERCEIRO CARD • ESTADO DO CARRO", "Pode ocultar o terceiro card; a opção de apenas 1 card continua acima.");
+                    switchRow(box, "Exibir terceiro card", vehicleCardCount == 3, (v, enabled) -> {
+                        vehicleCardCount = enabled ? 3 : Math.min(vehicleCardCount, 2);
+                        getPreferences(0).edit().putInt("vehicle_cards_count", vehicleCardCount).apply();
+                        if (dashboard != null) dashboard.invalidate();
+                        redraw[0].run();
+                    });
                     choiceRow(box, "Visual do terceiro card", new String[]{"Indicador normal", "Carro + todas informações", "Apenas desenho do carro", "Carro + informações escolhidas"}, vehicleThirdVisualMode, mode -> {
                         vehicleThirdVisualMode = mode;
                         getPreferences(0).edit().putInt("vehicle_third_visual_mode", mode).apply();
@@ -4271,8 +4298,9 @@ public class MainActivity extends Activity {
                 int cardBg = flashing ? cBad : (over ? mix(cSurf2, cBad, .34f) : cSurf2);
                 int titleColor = flashing ? Color.WHITE : (over ? cBad : cDim);
                 int valueColor = flashing ? Color.WHITE : (over ? cBad : (live ? cText : cDim));
-                rr(x, y, w, h, 12, cardBg);
-                text(fit(title, 10, tfBold, w - 12), x + w / 2f, y + 17, 10, titleColor, tfBold, Paint.Align.CENTER, .06f);
+                rr(x, y, w, h, 13, cardBg);
+                rrs(x, y, w, h, 13, cHair, 1f);
+                text(fit(title, 11, tfBold, w - 14), x + w / 2f, y + 18, 11, titleColor, tfBold, Paint.Align.CENTER, .04f);
                 String shown = live ? val : "--";
                 float uw = unit.isEmpty() ? 0 : measure(unit, 12, tfReg, 0) + 4, vs = 22;
                 // Texto das músicas ocupa mais espaço: reduzimos a fonte, nunca extrapola a borda.
@@ -4305,7 +4333,7 @@ public class MainActivity extends Activity {
 
         void topVolumeKey(int id, float x, float w, int kind, String description, boolean active) {
             boolean pressed = hit(id, x, 10, w, 52);
-            rr(x, 10, w, 52, 12, pressed ? mix(cSurf2, accent, .30f) : cSurf2);
+            if (pressed) rr(x + 4, 15, w - 8, 42, 9, mix(cSurf2, accent, .28f));
             ic(kind, x + w/2f, 36, 22, active ? cBad : accent);
         }
 
@@ -4323,12 +4351,15 @@ public class MainActivity extends Activity {
             drawTopWidget(dvx + 14);
             // Grupos proporcionais e espaços reais entre botões; não sobrepor rótulos.
             if (topVolumeVisible) {
-                // Três botões iguais, centros equidistantes e apenas UM separador externo.
-                // Um divisor antes do conjunto e outro depois; espaço de 14 px entre áreas de toque.
+                // Um único conjunto: menos, mudo e mais. Áreas de toque independentes.
                 ln(598, 20, 598, 52, cHair, 1.5f);
-                topVolumeKey(1, 604, 58, I_MINUS, "Diminuir volume", false);
-                topVolumeKey(2, 676, 58, I_PLUS, "Aumentar volume", false);
-                topVolumeKey(3, 748, 58, isMuted() ? I_MUTE : I_SPEAKER, "Alternar mudo", isMuted());
+                rr(606, 10, 204, 52, 14, cSurf2);
+                rrs(606, 10, 204, 52, 14, cHair, 1.1f);
+                ln(674, 18, 674, 54, cHair, 1f);
+                ln(742, 18, 742, 54, cHair, 1f);
+                topVolumeKey(1, 606, 68, I_MINUS, "Diminuir volume", false);
+                topVolumeKey(3, 674, 68, isMuted() ? I_MUTE : I_SPEAKER, "Alternar mudo", isMuted());
+                topVolumeKey(2, 742, 68, I_PLUS, "Aumentar volume", false);
                 ln(818, 20, 818, 52, cHair, 1.5f);
             }
             // Até quatro atalhos opcionais + Config, com largura proporcional.
@@ -4379,8 +4410,8 @@ public class MainActivity extends Activity {
                 tc(fit(weatherLoading?"Buscando previsão…":weatherCity.isEmpty() && !weatherAuto?"Escolha sua cidade":"Previsão indisponível",21,tfMed,w-30),cx,y+383,21,cText,tfMed);
                 tc("Toque para configurar",cx,y+419,16,cMuted,tfReg);
             } else {
-                tc(fit(weatherDetail.isEmpty()?weatherCity:weatherDetail,21,tfMed,w-40),cx,y+219,21,cText,tfMed);
-                tc(fit(weatherCondition,17,tfReg,w-40),cx,y+255,17,cMuted,tfReg);
+                tc(fit(weatherDetail.isEmpty()?weatherCity:weatherDetail,27,tfBold,w-38),cx,y+219,27,cText,tfBold);
+                tc(fit(weatherCondition,18,tfReg,w-40),cx,y+255,18,cMuted,tfReg);
                 weatherIcon(weatherCode,cx-63,y+330,72);
                 t(weatherLine,cx-20,y+347,Math.min(50,w*.115f),cText,tfBold);
                 float dx = w>500?124:100;
@@ -4641,15 +4672,15 @@ public class MainActivity extends Activity {
                 else { tc(weatherLoading ? "Buscando previsão…" : "Previsão indisponível", cx, 450, 24, cText, tfMed); tc(fit(weatherCity, 17, tfReg, 280) + (weatherLoading ? "" : "  •  toque para tentar"), cx, 482, 17, cMuted, tfReg); }
             } else {
                 boolean offline = !netOnline || weatherFailed;
-                t(fit(weatherDetail.isEmpty() ? weatherCity : weatherDetail, 22, tfMed, offline ? 150 : 190), x + 24, 304, 22, cText, tfMed);
-                if (offline) text("offline" + (lastWeatherSuccess > 0 ? " · há " + ((SystemClock.elapsedRealtime() - lastWeatherSuccess) / 60000) + " min" : ""), x + w - 24, 304, 13, faint(), tfReg, Paint.Align.RIGHT, 0);
-                else {
-                    String stamp = weatherLoading ? "Atualizando…" : (lastWeatherSuccess > 0 ? "há " + ((SystemClock.elapsedRealtime() - lastWeatherSuccess) / 60000) + " min" : "");
-                    tr(stamp, x + w - 24, 304, 15, cDim, tfReg);
-                }
-                t(fit(weatherCondition, 18, tfReg, 282), x + 24, 332, 18, cMuted, tfReg);
-                weatherIcon(weatherCode, x + 58, 388, 64);
-                t(weatherLine, x + 112, 404, 56, cText, tfBold);
+                String cityName = weatherDetail.isEmpty() ? weatherCity : weatherDetail;
+                t(fit(cityName, 26, tfBold, w - 48), x + 24, 309, 26, cText, tfBold);
+                t(fit(weatherCondition, 18, tfReg, w - 48), x + 24, 339, 18, cMuted, tfReg);
+                String stamp = !netOnline || weatherFailed ? "offline" :
+                        weatherLoading ? "Atualizando…" : (lastWeatherSuccess > 0
+                        ? "atualizado há " + ((SystemClock.elapsedRealtime() - lastWeatherSuccess) / 60000) + " min" : "");
+                t(fit(stamp, 13, tfReg, w - 48), x + 24, 359, 13, cDim, tfReg);
+                weatherIcon(weatherCode, x + 68, 402, 74);
+                t(fit(weatherLine, 55, tfBold, 195), x + 126, 416, 55, cText, tfBold);
                 statCell(x + 24, 438, "MÁX / MÍN", weatherHigh + " / " + weatherLow);
                 statCell(x + 174, 438, "CHUVA", weatherRain);
                 statCell(x + 24, 494, "VENTO", weatherWind);
@@ -4664,7 +4695,7 @@ public class MainActivity extends Activity {
             card(x, y, w, h);
             int srcCol = mediaIsSpotify ? 0xff1ED760 : accent;
             circle(x + 40, y + 42, 22, srcCol); ic(I_NOTE, x + 40, y + 42, 24, mediaIsSpotify ? 0xff06210F : onAccent);
-            t(fit(mediaSource, 24, tfMed, 230), x + 76, y + 51, 24, cText, tfMed);
+            t(fit(mediaSource, 21, tfMed, 230), x + 76, y + 50, 21, cMuted, tfMed);
             if (mediaCtl != null) {
                 float pw = 156, px = x + w - 24 - pw, py = y + 25;
                 rr(px, py, pw, 34, 17, mediaPlaying ? mix(cSurf2, cOk, .22f) : cSurf2);
@@ -4683,7 +4714,7 @@ public class MainActivity extends Activity {
             } else ic(I_NOTE, ax + art / 2, ay + art / 2, art * .4f, accent);
             hit(23, ax, ay, art, art); // fora da capa permanece na Home
             float tx = ax + art + (wide ? 36 : 22), tw = Math.max(24, x + w - 28 - tx);
-            float ts = wide ? 36 : 28, as = wide ? 24 : 20;
+            float ts = wide ? 38 : 30, as = wide ? 23 : 20;
             float yl = wide ? 214 : 202, yt = wide ? 262 : 246, ya = wide ? 298 : 280, yh = wide ? 336 : 318;
             text(mediaPlaying ? "TOCANDO AGORA" : (mediaCtl != null ? "EM PAUSA" : mediaSource.toUpperCase(Locale.getDefault())), tx, yl, 14, accent, tfBold, Paint.Align.LEFT, .1f);
             canvas.save(); canvas.clipRect(tx, y+112, x+w-22, y+263);
