@@ -4193,6 +4193,9 @@ public class MainActivity extends Activity {
             }
         }
         void drawAnimatedDock(float f) {
+            // Com o painel do veículo oculto (Home compacta), os atalhos
+            // pertencem somente ao layout expandido e nunca são desenhados.
+            if (!vehicleMenuEnabled) return;
             // Não deixa atalhos invisíveis capturarem toques após recolher.
             float visible = 1f - homeSmooth(f / .72f);
             if (visible < .003f) return;
@@ -4217,7 +4220,13 @@ public class MainActivity extends Activity {
             if (albumBg && Color.alpha(artCur) > 0) drawArtGlow();
             drawHeader();
             long now = SystemClock.uptimeMillis();
-            boolean idleTarget = immersiveIdle && (now - lastHomeInteraction > HOME_IDLE_MS) && !drivingMode;
+            // Home de dois cards: usa imediatamente a disposição panorâmica,
+            // com cards altos e sem os atalhos Rádio/Spotify no rodapé.
+            // Na Home completa (veículo ativado), mantém recolhimento automático
+            // opcional após 3 min, como antes.
+            boolean compactHome = !vehicleMenuEnabled;
+            boolean idleTarget = compactHome ||
+                    (immersiveIdle && (now - lastHomeInteraction > HOME_IDLE_MS) && !drivingMode);
             if (idleTarget != lastHomeIdleTarget) {
                 lastHomeIdleTarget = idleTarget;
                 homeIdleTransitionFrom = homeIdleFraction;
@@ -4232,7 +4241,7 @@ public class MainActivity extends Activity {
             if (progress >= 1f && f < .001f) {
                 // Estado normal: desenha diretamente, sem buffers/efeitos desnecessários.
                 drawStandardHome();
-                drawDock();
+                if (!compactHome) drawDock();
             } else if (progress >= 1f && f > .999f) {
                 // Estado recolhido: também sem camadas intermediárias (melhor no RK3326).
                 drawIdleHome();
