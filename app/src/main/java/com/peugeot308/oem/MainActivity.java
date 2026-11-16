@@ -2601,7 +2601,7 @@ public class MainActivity extends Activity {
         if(pardalRadar==null)return;
         String[] tools={"Estado da base e GPS", "Atualizar radares agora (Wi-Fi)",
                 "Testar áudio do radar",
-                pardalRadar.isSimulating()?"Parar simulação":"Simular radar de 350 a 0 m",
+                pardalRadar.isSimulating()?"Parar simulação":"Simular radar de 150 a 0 m",
                 "Permitir avisos sobre outros aplicativos"};
         new AlertDialog.Builder(this).setTitle("Radar Pardal • Ferramentas")
             .setItems(tools,(d,which)->{
@@ -2628,7 +2628,7 @@ public class MainActivity extends Activity {
                             pardalRadar.stopSimulation();snack("Simulação encerrada");
                         }else{
                             pardalRadar.startSimulation();
-                            snack("Simulação de radar: 350 m até 0 m, velocidade de teste 80 km/h");
+                            snack("Simulação de radar: 150 m até 0 m, velocidade de teste 80 km/h");
                         }
                         if(dashboard!=null)dashboard.invalidate();break;
                     case 4: radarOverlayPermission();break;
@@ -4842,6 +4842,28 @@ public class MainActivity extends Activity {
             hit(30,x,y+180,w,h-180);
         }
 
+        /** Placeholder OEM vetorial para Spotify sem capa: sem CD/círculo borrado. */
+        void drawMissingArtwork(float ax,float ay,float aw,float ah,float radius){
+            p.reset();p.setAntiAlias(true);
+            p.setShader(new LinearGradient(ax,ay,ax+aw,ay+ah,
+                    new int[]{mix(cSurf2,accent,.12f),cSurf2,mix(cSurf2,cBg0,.25f)},
+                    null,Shader.TileMode.CLAMP));
+            r.set(ax,ay,ax+aw,ay+ah);
+            canvas.drawRoundRect(r,radius,radius,p);
+            p.setShader(null);
+            rrs(ax,ay,aw,ah,radius,cHair,1.1f);
+            float side=Math.min(aw,ah),cx=ax+aw*.5f,cy=ay+ah*.43f;
+            float[] heights={.20f,.34f,.48f,.29f,.56f,.37f,.22f};
+            float gap=side*.072f,bw=Math.max(3f,side*.033f);
+            for(int i=0;i<heights.length;i++){
+                float bh=side*heights[i],x=cx+(i-3)*gap-bw*.5f;
+                rr(x,cy-bh*.5f,bw,bh,bw*.48f,
+                        i==4?mix(accent,cText,.35f):mix(accent,cMuted,.43f));
+            }
+            tc("SEM CAPA",cx,ay+ah*.81f,Math.min(16f,side*.073f),
+                    cMuted,tfMed);
+        }
+
         void drawMediaIdle(float x,float w,float h) {
             float y=96;
             card(x,y,w,h);
@@ -4858,8 +4880,7 @@ public class MainActivity extends Activity {
                 else sh=Math.max(1,Math.round(bw/dstRatio));
                 canvas.drawBitmap(albumArt,new Rect((bw-sw)/2,(bh-sh)/2,(bw+sw)/2,(bh+sh)/2),r,p);
             } else {
-                rr(ax,ay,aw,ah,22,cSurf2);
-                ic(I_NOTE,ax+aw/2,ay+ah*.44f,Math.min(120,aw*.25f),accent);
+                drawMissingArtwork(ax,ay,aw,ah,22f);
             }
             // Degradê interno no rodapé, com tipografia legível sobre qualquer capa.
             p.reset();p.setAntiAlias(true);
@@ -5125,13 +5146,13 @@ public class MainActivity extends Activity {
             float art = wide ? Math.min(300, w*.36f) : Math.min(216, Math.max(120,w*.34f));
             float ax = x + 32, ay = wide ? 168 : 172;
             rr(ax, ay, art, art, 24, cSurf2);
-            if (albumArt != null) {
+            if (albumArt != null && !albumArt.isRecycled()) {
                 p.reset(); p.setAntiAlias(true); p.setFilterBitmap(true);
                 canvas.save(); path.reset(); r.set(ax, ay, ax + art, ay + art); path.addRoundRect(r, 24, 24, Path.Direction.CW); canvas.clipPath(path);
                 int bw = albumArt.getWidth(), bh = albumArt.getHeight(), side = Math.min(bw, bh);
                 canvas.drawBitmap(albumArt, new Rect((bw - side) / 2, (bh - side) / 2, (bw - side) / 2 + side, (bh - side) / 2 + side), r, p);
                 canvas.restore(); rrs(ax, ay, art, art, 24, cHair, 1.2f);
-            } else ic(I_NOTE, ax + art / 2, ay + art / 2, art * .4f, accent);
+            } else drawMissingArtwork(ax,ay,art,art,24f);
             hit(23, ax, ay, art, art); // fora da capa permanece na Home
             float tx = ax + art + (wide ? 36 : 22), tw = Math.max(24, x + w - 28 - tx);
             float ts = wide ? 38 : 30, as = wide ? 23 : 20;
@@ -5303,11 +5324,11 @@ public class MainActivity extends Activity {
             // Progresso fino e continuo, sem barras que encubram o aviso.
             float left=x+20f,top=y+174f,width=w-40f;
             rr(left,top,width,5f,2.5f,0xff31404C);
-            float fraction=Math.max(0f,Math.min(1f,(350f-d)/350f));
+            float fraction=Math.max(0f,Math.min(1f,(150f-d)/150f));
             if(fraction>.005f)rr(left,top,width*fraction,5f,2.5f,color);
             text("APROXIMAÇÃO",left,y+197f,12,0xff8193A2,tfMed,
                     Paint.Align.LEFT,.04f);
-            text("350 → 0 m",x+w-20f,y+197f,12,0xff8193A2,tfMed,
+            text("150 → 0 m",x+w-20f,y+197f,12,0xff8193A2,tfMed,
                     Paint.Align.RIGHT,0f);
         }
         void drawAlertPopup() {

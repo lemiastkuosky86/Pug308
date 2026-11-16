@@ -24,6 +24,7 @@ final class PardalRadar {
     private static final String RAW_CATALOG="https://raw.githubusercontent.com/Murkiriel/pardal/main/catalogo.json";
     private static final String RAW_CSV="https://raw.githubusercontent.com/Murkiriel/pardal/main/estados/SP/radares.csv";
     private static final long DAY=86400000L;
+    private static final int ALERT_METERS=150;
     private static PardalRadar instance;
     static synchronized PardalRadar shared(Context context, SharedPreferences pref){
         if(instance==null)instance=new PardalRadar(context.getApplicationContext(),pref);
@@ -52,7 +53,7 @@ final class PardalRadar {
     private int toneVolume=-1;
     private long lastGpsLog=0;
     private Location lastBearingFix;
-    private String recentlyPassedCamera="";
+    private Camera recentlyPassedCamera;
     private long recentlyPassedAt=0L;
     private volatile String lastAudioError="";
     private String lastLoggedCamera="";
@@ -105,7 +106,7 @@ final class PardalRadar {
         mode=Math.max(SMART,Math.min(OFF,value));
         pref.edit().putInt("pardal_radar_mode",mode).apply();
         if(mode==OFF){stopSimulation();current=null;distance=-1;stopTone();
-            recentlyPassedCamera="";recentlyPassedAt=0L;}
+            recentlyPassedCamera=null;recentlyPassedAt=0L;}
         log("modo="+mode);
     }
     boolean isSimulating(){return simulating;}
@@ -114,19 +115,19 @@ final class PardalRadar {
     int count(){return cameras.size();}
     private float remainingNow(){
         long ms=Math.max(0L,SystemClock.elapsedRealtime()-fixAt);
-        // Só prediz enquanto o fix GPS está válido. Não extrapola posições antigas.
-        return distance-Math.max(0f,speed)/3.6f*Math.min(6f,ms/1000f);
+        // Interpolação curta: não deixar um fix antigo prever uma passagem falsa.
+        // O GPS confirma o cruzamento; até lá a contagem não zera sozinha.
+        return Math.max(1f,distance-Math.max(0f,speed)/3.6f*Math.min(1.0f,ms/1000f));
     }
-    int distance(){return active()?Math.max(0,Math.round(remainingNow())):-1;}
+    int distance(){return active()?Math.max(1,Math.round(remainingNow())):-1;}
     int limit(){Camera c=current;return active()&&c!=null?c.limit:0;}
     String kind(){Camera c=current;return c==null?"RADAR":c.kind.equals("RED_LIGHT")?"SEMÁFORO":c.kind.equals("SECTION")?"RADAR DE TRECHO":"RADAR FIXO";}
     boolean over(){return limit()>0&&speed>limit()+1;}
     int speed(){return Math.max(0,Math.round(speed));}
     boolean active(){
         long age=SystemClock.elapsedRealtime()-fixAt;
-        return mode!=OFF&&current!=null&&distance>=0&&age>=0L&&age<6000L
-                // Ao cruzar o ponto previsto, remove o aviso em vez de ficar em 0 m.
-                &&remainingNow()>-6f;
+        return mode!=OFF&&current!=null&&fixAt>0L&&distance>=0
+                &&age>=0L&&age<6000L;
     }
     String gpsStatus(){
         if(simulating)return "Simulação (não usa GPS)";
@@ -305,7 +306,7 @@ final class PardalRadar {
     void startSimulation(){
         if(mode==OFF){modeBeforeSimulation=OFF;mode=BOTH;}
         simulating=true;simulationStart=SystemClock.elapsedRealtime();
-        current=SIM;distance=350;speed=80;accuracy=0;fixAt=simulationStart;
+        current=SIM;distance=ALERT_METERS;speed=80;accuracy=0;fixAt=simulationStart;
         lastCamera="";lastSound=0;log("simulacao_inicio");
     }
     void stopSimulation(){
@@ -317,21 +318,23 @@ final class PardalRadar {
     void simulationTick(){
         if(!simulating)return;
         long elapsed=SystemClock.elapsedRealtime()-simulationStart;
-        if(elapsed>20500L){stopSimulation();return;}
-        current=SIM;distance=Math.max(0,350-(int)(elapsed/1000f*18));
+        if(elapsed>9000L){stopSimulation();return;}
+        current=SIM;distance=Math.max(1,ALERT_METERS-(int)(elapsed/1000f*18));
         speed=80;fixAt=SystemClock.elapsedRealtime();
         beepIfNeeded(SIM);
     }
     void onLocation(Location loc){
         if(simulating)return;
         if(mode==OFF){current=null;distance=-1;return;}
-        if(loc==null){current=null;distance=-1;gpsReason="Aguardando GPS";return;}
+        if(loc==null){fixAt=0L;stopTone();gpsReason="Aguardando GPS";return;}
 
         long ageMs=loc.getElapsedRealtimeNanos()>0 ?
                 (SystemClock.elapsedRealtimeNanos()-loc.getElapsedRealtimeNanos())/1_000_000L : 0L;
         boolean oldFix=ageMs>6000L;
         if(!loc.hasAccuracy()||loc.getAccuracy()>60f||oldFix){
-            current=null;distance=-1;
+            // Preserve a identidade do radar para não reiniciar a contagem após
+            // perda momentânea do sinal. Oculta o alerta até um fix válido.
+            fixAt=0L;stopTone();
             accuracy=loc.hasAccuracy()?loc.getAccuracy():-1f;
             gpsReason=oldFix?"GPS: posição antiga":
                     "GPS impreciso"+(loc.hasAccuracy()?" ±"+Math.round(loc.getAccuracy())+" m":"");
@@ -357,8 +360,8 @@ final class PardalRadar {
                 if(!loc.hasSpeed())movingSpeed=traveled/elapsed;
             }
         }
-        if(Float.isNaN(bearing)||movingSpeed<2f){
-            current=null;distance=-1;fixAt=SystemClock.elapsedRealtime();
+        if(Float.isNaN(bearing)||movingSpeed<1f){
+            fixAt=0L;stopTone();
             speed=movingSpeed*3.6f;
             gpsReason="GPS: aguardando movimento e rumo";
             return;
@@ -372,54 +375,90 @@ final class PardalRadar {
         // O callback pode chegar atrasado: registrar a hora real da amostra GPS.
         fixAt=SystemClock.elapsedRealtime()-Math.max(0L,ageMs);
         speed=movingSpeed*3.6f;
-        Camera best=null;
-        float nearest=351f;
-        float bestAlong=351f;
-        float bestScore=Float.MAX_VALUE;
+        long now=SystemClock.elapsedRealtime();
         float[] result=new float[2];
         Camera prior=current;
-        int latCell=cell(loc.getLatitude()),lonCell=cell(loc.getLongitude());
-        Map<Long,List<Camera>> index=cells;
-        for(int dy=-1;dy<=1;dy++)for(int dx=-1;dx<=1;dx++){
-            List<Camera> nearby=index.get(key(latCell+dy,lonCell+dx));
-            if(nearby==null)continue;
-            for(Camera c:nearby){
-                Location.distanceBetween(loc.getLatitude(),loc.getLongitude(),c.lat,c.lon,result);
-                float d=result[0];
-                if(!RadarGeo.candidate(d,bearing,result[1],loc.getAccuracy(),c.direction))
-                    continue;
-                if(c.key().equals(recentlyPassedCamera)
-                        &&SystemClock.elapsedRealtime()-recentlyPassedAt<45000L)continue;
-                float along=RadarGeo.forwardMeters(d,bearing,result[1]);
-                float lateral=RadarGeo.lateralMeters(d,bearing,result[1]);
-                float score=along+.15f*lateral;
-                if(prior!=null&&prior.key().equals(c.key()))score-=12f;
-                if(score>=bestScore)continue;
-                best=c;nearest=d;bestAlong=along;bestScore=score;
-            }
+        // Não deixar o mesmo ponto, nem duplicatas próximas na base, reacenderem
+        // logo depois de passar. Limpa só após afastar-se de verdade do local.
+        if(recentlyPassedCamera!=null){
+            Location.distanceBetween(loc.getLatitude(),loc.getLongitude(),
+                    recentlyPassedCamera.lat,recentlyPassedCamera.lon,result);
+            if(result[0]>260f||now-recentlyPassedAt>900000L)
+                recentlyPassedCamera=null;
         }
-        // Se o radar anteriormente acompanhado acabou de ficar para trás,
-        // não deixá-lo reaparecer quando a posição GPS oscilar perto do poste.
-        if(prior!=null && prior!=SIM && (best==null||!best.key().equals(prior.key()))){
+
+        // A passagem precisa vir do GPS, não da contagem estimada por tempo.
+        if(prior!=null&&prior!=SIM){
             Location.distanceBetween(loc.getLatitude(),loc.getLongitude(),
                     prior.lat,prior.lon,result);
             if(RadarGeo.passed(result[0],bearing,result[1],loc.getAccuracy())){
-                recentlyPassedCamera=prior.key();
-                recentlyPassedAt=SystemClock.elapsedRealtime();
-                log("radar_ultrapassado kind="+prior.kind+" offset_lateral="+
+                recentlyPassedCamera=prior;
+                recentlyPassedAt=now;
+                current=null;distance=-1;lastCamera="";stopTone();
+                lastLoggedCamera="";
+                log("radar_ultrapassado kind="+prior.kind+" lateral="+
                         Math.round(RadarGeo.lateralMeters(result[0],bearing,result[1]))+"m");
+                return;
             }
         }
+
+        Camera best=null;
+        float nearest=Float.MAX_VALUE;
+        float bestAlong=Float.MAX_VALUE;
+        float bestScore=Float.MAX_VALUE;
+        // Mantém o alvo atual quando há oscilação de coordenadas/rumo.
+        // Não troca por um radar vizinho até a passagem estar confirmada.
+        if(prior!=null&&prior!=SIM){
+            Location.distanceBetween(loc.getLatitude(),loc.getLongitude(),
+                    prior.lat,prior.lon,result);
+            float ahead=RadarGeo.forwardMeters(result[0],bearing,result[1]);
+            float side=RadarGeo.lateralMeters(result[0],bearing,result[1]);
+            float tolerance=RadarGeo.lateralTolerance(result[0],loc.getAccuracy());
+            if(ahead>-(Math.max(5f,loc.getAccuracy()*.3f))
+                    &&ahead<=ALERT_METERS+18f&&side<=tolerance+18f
+                    &&result[0]<=195f){
+                best=prior;nearest=result[0];bestAlong=ahead;
+            }
+        }
+
+        if(best==null){
+            int latCell=cell(loc.getLatitude()),lonCell=cell(loc.getLongitude());
+            Map<Long,List<Camera>> index=cells;
+            for(int dy=-1;dy<=1;dy++)for(int dx=-1;dx<=1;dx++){
+                List<Camera> nearby=index.get(key(latCell+dy,lonCell+dx));
+                if(nearby==null)continue;
+                for(Camera c:nearby){
+                    if(recentlyPassedCamera!=null){
+                        if(c.key().equals(recentlyPassedCamera.key()))continue;
+                        float[] gap=new float[1];
+                        Location.distanceBetween(c.lat,c.lon,
+                                recentlyPassedCamera.lat,recentlyPassedCamera.lon,gap);
+                        if(gap[0]<45f)continue;
+                    }
+                    Location.distanceBetween(loc.getLatitude(),loc.getLongitude(),
+                            c.lat,c.lon,result);
+                    float d=result[0];
+                    if(!RadarGeo.candidate(d,bearing,result[1],loc.getAccuracy(),c.direction))
+                        continue;
+                    float along=RadarGeo.forwardMeters(d,bearing,result[1]);
+                    float lateral=RadarGeo.lateralMeters(d,bearing,result[1]);
+                    float score=along+.15f*lateral;
+                    if(score>=bestScore)continue;
+                    best=c;nearest=d;bestAlong=along;bestScore=score;
+                }
+            }
+        }
+
         String bestKey=best==null?"":best.key();
         if(!bestKey.equals(lastLoggedCamera)){
             lastLoggedCamera=bestKey;
-            if(best!=null)log("aproximacao kind="+best.kind+" limite="+best.limit+" distancia="+Math.round(nearest)+"m");
+            if(best!=null)log("aproximacao kind="+best.kind+" limite="+best.limit+
+                    " distancia="+Math.round(nearest)+"m");
         }
         boolean same=best!=null&&prior!=null&&best.key().equals(prior.key());
-        int nextDistance=best==null?-1:Math.max(0,Math.round(bestAlong));
-        // O GPS pode oscilar alguns metros. Uma vez acompanhando o mesmo radar,
-        // a contagem não sobe enquanto o carro continua em aproximação.
-        if(same&&distance>=0) {
+        int nextDistance=best==null?-1:Math.max(1,Math.round(bestAlong));
+        // Mesmo alvo: apenas reduz a contagem, nunca reinicia por jitter GPS.
+        if(same&&distance>=0){
             nextDistance=Math.min(distance,nextDistance);
             if(previousShown>=0)nextDistance=Math.min(previousShown,nextDistance);
         }
@@ -439,7 +478,7 @@ final class PardalRadar {
         long now=SystemClock.elapsedRealtime();
         int approaching=distance();
         if(approaching<0)return;
-        long gap=approaching<=50?650:approaching<=100?1100:approaching<=150?1800:approaching<=200?2900:5500;
+        long gap=approaching<=50?650:approaching<=100?1100:1800;
         if(!speeding)gap=Math.max(gap,8000);
         if(!c.key().equals(lastCamera)){
             lastCamera=c.key();

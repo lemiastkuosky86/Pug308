@@ -151,7 +151,7 @@ public final class RadarForegroundService extends Service {
         row.addView(data,dataParams);
 
         kindText=label("RADAR FIXO",13,0xFF9FB5C3,true);
-        radarText=label("350 m",27,Color.WHITE,true);
+        radarText=label("150 m",27,Color.WHITE,true);
         speedText=label("ATUAL  60 km/h",13,0xFF80D7C9,false);
         data.addView(kindText);
         data.addView(radarText);
@@ -160,7 +160,7 @@ public final class RadarForegroundService extends Service {
 
         distanceBar=new ProgressBar(this,null,android.R.attr.progressBarStyleHorizontal);
         distanceBar.setIndeterminate(false);
-        distanceBar.setMax(350);
+        distanceBar.setMax(150);
         distanceBar.setProgressBackgroundTintList(
                 android.content.res.ColorStateList.valueOf(0xFF344551));
         distanceBar.setProgressTintList(
@@ -199,7 +199,7 @@ public final class RadarForegroundService extends Service {
         speedText.setTextColor(speeding?0xFFFF918B:0xFF80D7C9);
         distanceBar.setProgressTintList(android.content.res.ColorStateList.valueOf(
                 speeding?0xFFF27670:0xFF5ABBC9));
-        distanceBar.setProgress(350-Math.max(0,Math.min(350,radar.distance())));
+        distanceBar.setProgress(150-Math.max(0,Math.min(150,radar.distance())));
     }
     @Override public void onDestroy(){
         running=null;main.removeCallbacks(refresh);removeOverlay();
