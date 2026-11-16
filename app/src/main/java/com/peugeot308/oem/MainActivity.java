@@ -2772,8 +2772,8 @@ public class MainActivity extends Activity {
                             ||(y>=170f&&x>225f&&x<1050f))continue;
                     stars[index][0]=x;
                     stars[index][1]=y;
-                    stars[index][2]=.6f+skyRandom.nextFloat()*.7f;
-                    stars[index][3]=40f+skyRandom.nextInt(72);
+                    stars[index][2]=1.5f+skyRandom.nextFloat()*1.1f+(index%9==0?.35f:0f);
+                    stars[index][3]=115f+skyRandom.nextInt(65);
                     stars[index][4]=skyRandom.nextFloat()*6.283185f;
                     stars[index][5]=.45f+skyRandom.nextFloat()*1.1f;
                     index++;
@@ -2905,12 +2905,12 @@ public class MainActivity extends Activity {
                 paint.setAntiAlias(true);
                 long skyNow=SystemClock.uptimeMillis();
                 paint.setStyle(Paint.Style.FILL);
-                paint.setColor(0xffA9BBD0);
+                paint.setColor(0xffDDE7F6);
                 for(int i=0;i<skyStars.length;i++){
                     float[] star=skyStars[i];
                     float blink=(float)(.5+.5*Math.sin(
                             skyNow/1000.0*star[5]+star[4]));
-                    paint.setAlpha((int)(5f+star[3]*blink*blink));
+                    paint.setAlpha((int)(35f+star[3]*(0.28f+0.68f*blink*blink)));
                     c.drawCircle(star[0],star[1],star[2],paint);
                 }
                 if(cometStartMs<0L&&skyNow>=nextCometMs)beginComet(skyNow);
