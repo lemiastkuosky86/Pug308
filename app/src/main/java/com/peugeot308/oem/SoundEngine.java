@@ -39,7 +39,7 @@ final class SoundEngine {
     private final SharedPreferences sp;
 
     // ---- estado salvo ----
-    boolean on = true;
+    boolean on = false; // Som original da Jancar por padrao; EQ somente por escolha explicita
     final float[] band = new float[EqMath.N];       // curva atual (dB)
     float pre = 0f;                                  // pré-ganho (dB)
     String presetName = "Plano";                     // predefinição ativa ("Usuário" = curva manual)
@@ -81,6 +81,12 @@ final class SoundEngine {
         ctx = c;
         audio = (AudioManager) c.getSystemService(Context.AUDIO_SERVICE);
         sp = c.getSharedPreferences(PREFS, 0);
+        // Migracao unica: atualizacoes nao devem religar EQ e volume automatico
+        // sobre o DSP original da Jancar. As curvas e presets ficam preservados.
+        if (!sp.getBoolean("jancar_audio_passthrough_175", false)) {
+            sp.edit().putBoolean("on", false).putBoolean("autovol_on", false)
+                    .putBoolean("jancar_audio_passthrough_175", true).apply();
+        }
         load();
     }
 
@@ -103,7 +109,7 @@ final class SoundEngine {
     private static String cleanName(String n) { return n == null ? "" : n.replaceAll("[|;,\\n\\r]", " ").trim(); }
 
     private void load() {
-        on = sp.getBoolean("on", true);
+        on = sp.getBoolean("on", false);
         parse(sp.getString("bands", ""), band);
         pre = EqMath.clamp(sp.getFloat("pre", 0f), -EqMath.RANGE, EqMath.RANGE);
         presetName = sp.getString("preset", "Plano");
@@ -198,6 +204,8 @@ final class SoundEngine {
     }
 
     private void ensureEffect() {
+        // Nao criar nem assumir a sessao global de audio enquanto o EQ estiver desligado.
+        if (!on && !testing()) return;
         if (eq != null) return;
         long now = SystemClock.elapsedRealtime();
         if (now < retryAt) return;
@@ -227,7 +235,7 @@ final class SoundEngine {
     }
 
     private void openSession(int s) {
-        if (s <= 0 || effectOk || sessEq.containsKey(s)) return; // só se o efeito global não funcionou
+        if ((!on && !testing()) || s <= 0 || effectOk || sessEq.containsKey(s)) return; // só se o efeito global não funcionou
         try { Equalizer e = new Equalizer(0, s); sessEq.put(s, e); if (nBands == 0) { nBands = e.getNumberOfBands(); } applyNow(); status = "Ativo por aplicativo (" + sessEq.size() + ")"; } catch (Throwable ignored) {}
     }
     private void closeSession(int s) { Equalizer e = sessEq.remove(s); if (e != null) try { e.release(); } catch (Exception ignored) {} }
@@ -270,11 +278,24 @@ final class SoundEngine {
     }
 
     void applyNow() {
+        boolean testingNow = testing();
+        if (!on && !testingNow) {
+            // Desligado significa passthrough real: soltar as instancias criadas pelo
+            // launcher para deixar o processamento de audio com a Jancar.
+            h.removeCallbacks(smoothTask);
+            loudTarget = loudCur = 0f;
+            releaseEffects();
+            for (Equalizer e : new ArrayList<>(sessEq.values())) {
+                try { e.release(); } catch (Exception ignored) {}
+            }
+            sessEq.clear();
+            status = "Som original Jancar: sem processamento do launcher";
+            return;
+        }
         ensureEffect();
         boolean active = on && !compare;
         float[] dbs = targetLevels();
-        boolean testing = testUntil > SystemClock.elapsedRealtime();
-        if (testing) active = true;
+        if (testingNow) active = true;
         if (eq != null) {
             try { setLevels(eq, dbs, active); } catch (Exception e) { releaseEffects(); }
         }
@@ -299,6 +320,11 @@ final class SoundEngine {
     }
 
     void volumeChanged() {
+        if (!on && !testing()) {
+            h.removeCallbacks(smoothTask);
+            loudTarget = loudCur = 0f;
+            return;
+        }
         float vf = volumeFraction();
         loudTarget = (loudOn && vf > 0f) ? EqMath.loudFactor(vf, loudBelow) : 0f;
         if (Math.abs(loudTarget - loudCur) > 0.002f) { h.removeCallbacks(smoothTask); h.post(smoothTask); }
