@@ -36,6 +36,9 @@ public final class RadarForegroundService extends Service {
     private View overlay;
     private TextView radarText;
     private TextView limitText;
+    private TextView kindText;
+    private TextView speedText;
+    private ProgressBar distanceBar;
     private final Handler main=new Handler(Looper.getMainLooper());
     private int lastNotificationDistance=-999;
     private long lastNotificationTime=0L;
@@ -120,23 +123,63 @@ public final class RadarForegroundService extends Service {
         if(bold)v.setTypeface(Typeface.DEFAULT,Typeface.BOLD);
         return v;
     }
+    /** Cartao compacto para Waze/Maps, com a mesma hierarquia do aviso na Home. */
     private void makeOverlay(){
         if(overlay!=null)return;
-        LinearLayout root=new LinearLayout(this);root.setGravity(Gravity.CENTER_VERTICAL);root.setOrientation(LinearLayout.HORIZONTAL);
-        root.setBackground(bg(0xEE131E29,17));root.setPadding(dp(14),dp(10),dp(14),dp(10));
-        limitText=label("60",28,Color.WHITE,true);limitText.setGravity(Gravity.CENTER);
-        limitText.setBackground(bg(0xFFBA2F2F,40));
-        root.addView(limitText,new LinearLayout.LayoutParams(dp(74),dp(74)));
-        radarText=label("RADAR • 350 m",22,Color.WHITE,true);
-        LinearLayout.LayoutParams right=new LinearLayout.LayoutParams(0,dp(76),1);right.leftMargin=dp(14);
-        root.addView(radarText,right);
+        LinearLayout root=new LinearLayout(this);
+        root.setGravity(Gravity.CENTER_VERTICAL);root.setOrientation(LinearLayout.VERTICAL);
+        root.setBackground(bg(0xF015202B,18));
+        root.setPadding(dp(15),dp(10),dp(15),dp(10));
+
+        LinearLayout row=new LinearLayout(this);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        limitText=label("60",28,0xFF121921,true);
+        limitText.setGravity(Gravity.CENTER);
+        GradientDrawable sign=new GradientDrawable();
+        sign.setShape(GradientDrawable.OVAL);
+        sign.setColor(0xFFF8FAFC);
+        sign.setStroke(dp(7),0xFFDB3E43);
+        limitText.setBackground(sign);
+        row.addView(limitText,new LinearLayout.LayoutParams(dp(70),dp(70)));
+
+        LinearLayout data=new LinearLayout(this);
+        data.setOrientation(LinearLayout.VERTICAL);
+        data.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams dataParams=new LinearLayout.LayoutParams(0,dp(72),1f);
+        dataParams.leftMargin=dp(14);
+        row.addView(data,dataParams);
+
+        kindText=label("RADAR FIXO",13,0xFF9FB5C3,true);
+        radarText=label("350 m",27,Color.WHITE,true);
+        speedText=label("ATUAL  60 km/h",13,0xFF80D7C9,false);
+        data.addView(kindText);
+        data.addView(radarText);
+        data.addView(speedText);
+        root.addView(row);
+
+        distanceBar=new ProgressBar(this,null,android.R.attr.progressBarStyleHorizontal);
+        distanceBar.setIndeterminate(false);
+        distanceBar.setMax(350);
+        distanceBar.setProgressBackgroundTintList(
+                android.content.res.ColorStateList.valueOf(0xFF344551));
+        distanceBar.setProgressTintList(
+                android.content.res.ColorStateList.valueOf(0xFF5ABBC9));
+        LinearLayout.LayoutParams barParams=new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,dp(4));
+        barParams.topMargin=dp(8);
+        root.addView(distanceBar,barParams);
         overlay=root;
         WindowManager.LayoutParams p=new WindowManager.LayoutParams(
-                Math.max(dp(200),Math.min(dp(430),getResources().getDisplayMetrics().widthPixels-dp(28))),dp(104),
+                Math.max(dp(220),Math.min(dp(410),
+                        getResources().getDisplayMetrics().widthPixels-dp(28))),
+                dp(116),
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE|WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE|
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,android.graphics.PixelFormat.TRANSLUCENT);
-        p.gravity=Gravity.TOP|Gravity.CENTER_HORIZONTAL;p.y=dp(32);
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE|
+                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE|
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                android.graphics.PixelFormat.TRANSLUCENT);
+        p.gravity=Gravity.TOP|Gravity.CENTER_HORIZONTAL;p.y=dp(22);
         try{windows.addView(overlay,p);}catch(Exception e){overlay=null;}
     }
     private void removeOverlay(){
@@ -148,8 +191,15 @@ public final class RadarForegroundService extends Service {
         }
         makeOverlay();if(overlay==null)return;
         limitText.setText(radar.limit()>0?String.valueOf(radar.limit()):"?");
-        radarText.setText(radar.kind()+"\n"+radar.distance()+" m  ·  "+radar.speed()+" km/h"
-                +(radar.over()?"  ·  REDUZA":""));
+        kindText.setText(radar.kind());
+        radarText.setText(radar.distance()+" m");
+        boolean speeding=radar.over();
+        speedText.setText("ATUAL  "+radar.speed()+" km/h"
+                +(speeding?"  •  REDUZA":""));
+        speedText.setTextColor(speeding?0xFFFF918B:0xFF80D7C9);
+        distanceBar.setProgressTintList(android.content.res.ColorStateList.valueOf(
+                speeding?0xFFF27670:0xFF5ABBC9));
+        distanceBar.setProgress(350-Math.max(0,Math.min(350,radar.distance())));
     }
     @Override public void onDestroy(){
         running=null;main.removeCallbacks(refresh);removeOverlay();

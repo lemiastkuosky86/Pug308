@@ -2752,53 +2752,55 @@ public class MainActivity extends Activity {
         final float homeScreenBrightness=getWindow().getAttributes().screenBrightness;
         final View clock=new View(this) {
             final Paint paint=new Paint(Paint.ANTI_ALIAS_FLAG);
-            // Estrelas nascem em posições aleatórias e desaparecem por completo.
-            // Reutiliza um conjunto fixo de posições: nenhum bitmap, thread ou alocação por frame.
-            final float[][] skyStars=new float[36][4];
-            final long[] starBornMs=new long[36],starLifeMs=new long[36];
+            // Ceu noturno: muitas estrelas fixas, pontuais e de magnitudes diferentes.
+            // Sem bloom/desfoque: coordenadas estaveis e cintilacao muito discreta.
+            final float[][] skyStars=new float[190][6]; // x,y,raio,alpha,fase,vel. angular
             final java.util.Random skyRandom=new java.util.Random(
-                    SystemClock.uptimeMillis() ^ 308174L);
-            long nextStarMs=SystemClock.uptimeMillis()+350L+skyRandom.nextInt(700);
+                    SystemClock.uptimeMillis() ^ 308177L);
+            {
+                for(int i=0;i<skyStars.length-7;i++){
+                    float x=20f+skyRandom.nextFloat()*1240f;
+                    float y=20f+skyRandom.nextFloat()*680f;
+                    float r=skyRandom.nextFloat()<.90f
+                            ? .34f+skyRandom.nextFloat()*.55f
+                            : .92f+skyRandom.nextFloat()*.52f;
+                    float alpha=48f+skyRandom.nextFloat()*125f;
+                    // Informacoes do launcher permanecem legiveis, mas o ceu nao
+                    // fica artificialmente vazio na parte central.
+                    if(y>150f&&y<640f&&x>225f&&x<1050f)alpha*=.42f;
+                    if(y>640f)alpha*=.55f;
+                    skyStars[i][0]=x;skyStars[i][1]=y;
+                    skyStars[i][2]=r;skyStars[i][3]=alpha;
+                    skyStars[i][4]=skyRandom.nextFloat()*6.28318f;
+                    skyStars[i][5]=.00032f+skyRandom.nextFloat()*.00046f;
+                }
+                // Cruzeiro do Sul (Crux) + Alfa/Beta Centauri, em proporcoes
+                // relativas aproximadas das suas coordenadas RA/Dec. Sem linhas
+                // desenhadas: no ceu real a constelacao e formada pelas estrelas.
+                // RA em graus, declinacao em graus, raio e brilho.
+                float[][] realStars={
+                    {186.65f,-63.10f,1.8f,225f}, // Acrux
+                    {191.93f,-59.69f,1.7f,216f}, // Mimosa
+                    {187.79f,-57.11f,1.5f,205f}, // Gacrux
+                    {183.79f,-58.75f,1.3f,175f}, // Delta Crucis
+                    {185.34f,-60.40f,1.0f,155f}, // Epsilon Crucis
+                    {219.90f,-60.83f,1.8f,195f}, // Alpha Centauri
+                    {210.96f,-60.37f,1.6f,190f}  // Beta Centauri
+                };
+                for(int i=0;i<realStars.length;i++){
+                    float[] q=skyStars[skyStars.length-realStars.length+i];
+                    q[0]=1120f-(realStars[i][0]-187.5f)*7f;
+                    q[1]=370f-(realStars[i][1]+60f)*12f;
+                    q[2]=realStars[i][2];q[3]=realStars[i][3];
+                    q[4]=skyRandom.nextFloat()*6.28318f;
+                    q[5]=.00022f+skyRandom.nextFloat()*.00028f;
+                }
+            }
             long cometStartMs=-1L,nextCometMs=SystemClock.uptimeMillis()
                     +4500L+skyRandom.nextInt(9500);
             long cometDurationMs=1700L;
             float cometX,cometY,cometDX,cometDY;
             int cometStyle=0;
-            boolean starAreaFree(float x,float y){
-                // Protege cabeçalho, relógio, informações do clima e faixa musical.
-                return !((y<170f&&x>440f&&x<840f)
-                        ||(y>=170f&&x>225f&&x<1050f));
-            }
-            void lightStars(long now){
-                // Às vezes surge uma estrela, às vezes duas ou três; nunca um padrão fixo.
-                int count=skyRandom.nextInt(10)<3?2:1;
-                if(skyRandom.nextInt(32)==0)count=3;
-                for(int n=0;n<count;n++){
-                    int slot=-1;
-                    for(int i=0;i<starLifeMs.length;i++){
-                        if(starLifeMs[i]==0L||now-starBornMs[i]>=starLifeMs[i]){
-                            slot=i;break;
-                        }
-                    }
-                    if(slot<0)break;
-                    float x=0f,y=0f;
-                    for(int tries=0;tries<48;tries++){
-                        x=40f+skyRandom.nextFloat()*1200f;
-                        y=42f+skyRandom.nextFloat()*500f;
-                        if(starAreaFree(x,y))break;
-                    }
-                    if(!starAreaFree(x,y))continue;
-                    skyStars[slot][0]=x;
-                    skyStars[slot][1]=y;
-                    // Conserva exatamente o tamanho aprovado na v1.73.
-                    skyStars[slot][2]=1.5f+skyRandom.nextFloat()*1.1f
-                            +(slot%9==0?.35f:0f);
-                    skyStars[slot][3]=165f+skyRandom.nextInt(70);
-                    starBornMs[slot]=now;
-                    starLifeMs[slot]=850L+skyRandom.nextInt(1600);
-                }
-                nextStarMs=now+450L+skyRandom.nextInt(1050);
-            }
             void beginComet(long now){
                 // Chega por cima, por baixo, pela esquerda ou pela direita.
                 // Cada trajetória é nova, restrita às margens para não cobrir os dados.
@@ -2825,26 +2827,16 @@ public class MainActivity extends Activity {
                     cometDX=-(170f+skyRandom.nextFloat()*95f);
                     cometDY=(skyRandom.nextFloat()-.5f)*150f;
                 }
-                cometStyle=skyRandom.nextInt(9)==0?1:0; // Easter egg: microfoguete raro.
+                cometStyle=0; // Apenas meteoros naturais, sem objetos estilizados.
                 cometDurationMs=1350L+skyRandom.nextInt(1000);
                 cometStartMs=now;
             }
             final Runnable refresh=new Runnable() {
-                @Override public void run() {
+                @Override public void run(){
                     if(screenSaverDialog==dlg&&dlg.isShowing()){
                         invalidate();
-                        long now=SystemClock.uptimeMillis();
-                        boolean starActive=false;
-                        for(int i=0;i<starLifeMs.length;i++){
-                            if(starLifeMs[i]>0L&&now-starBornMs[i]<starLifeMs[i]){
-                                starActive=true;break;
-                            }
-                        }
-                        // Redesenho rápido só com efeito visível; ocioso é econômico.
-                        long nextEvent=Math.min(nextStarMs,nextCometMs);
-                        long delay=cometStartMs>=0L?90L:(starActive?130L:
-                                Math.max(130L,Math.min(800L,nextEvent-now)));
-                        postDelayed(this,delay);
+                        // 190 pequenos pontos sem filtros custosos; ~5 FPS de ceu.
+                        postDelayed(this,cometStartMs>=0L?90L:210L);
                     }
                 }
             };
@@ -2946,20 +2938,18 @@ public class MainActivity extends Activity {
                 c.translate((w-1280f*scale)/2f,(h-720f*scale)/2f);
                 c.scale(scale,scale);
 
-                // Preto puro, com estrelas que ACENDEM e APAGAM de verdade.
+                // Pontos nítidos e persistentes: brilho levemente variável por estrela.
                 paint.reset();
                 paint.setAntiAlias(true);
                 long skyNow=SystemClock.uptimeMillis();
                 paint.setStyle(Paint.Style.FILL);
                 paint.setColor(0xffDDE7F6);
-                if(skyNow>=nextStarMs)lightStars(skyNow);
                 for(int i=0;i<skyStars.length;i++){
-                    long age=skyNow-starBornMs[i],life=starLifeMs[i];
-                    if(life<=0L||age<0L||age>=life)continue;
-                    float fade=Math.min(1f,Math.min(age/220f,(life-age)/320f));
-                    if(fade<=0f)continue;
                     float[] star=skyStars[i];
-                    paint.setAlpha((int)(star[3]*fade));
+                    float twinkle=.82f+.18f*(float)Math.sin(
+                            skyNow*star[5]+star[4]);
+                    int alpha=(int)Math.max(4f,Math.min(255f,star[3]*twinkle));
+                    paint.setAlpha(alpha);
                     c.drawCircle(star[0],star[1],star[2],paint);
                 }
                 if(cometStartMs<0L&&skyNow>=nextCometMs)beginComet(skyNow);
@@ -5273,49 +5263,52 @@ public class MainActivity extends Activity {
             postInvalidateDelayed(Math.min(1000L,radarModeNoticeUntil-now));
         }
 
+        /** Aviso de radar compacto, legivel e no mesmo acabamento OEM da Home. */
         void drawPardalPopup(){
             if(pardalRadar==null||!pardalRadar.active())return;
-            int d=pardalRadar.distance(), lim=pardalRadar.limit();
+            int d=pardalRadar.distance(),limit=pardalRadar.limit();
+            if(d<0)return;
             boolean over=pardalRadar.over();
-            // Popup centralizado na tela 1280 x 720, sem deslocar os demais cards.
-            final float w=560f,h=224f,x=(1280f-w)/2f,y=(720f-h)/2f;
-            int lineColor=over?0xffFA7069:0xff4CB8C9;
-            int secondary=0xffAEBFCB;
+            final float w=520f,h=208f,x=(1280f-w)/2f,y=(720f-h)/2f;
+            int color=over?0xffF27670:0xff58BCCA;
+            int muted=0xff9BABB8;
+            // Superficie escura, filete de estado e sombra sem brilho difuso.
+            rr(x+5,y+8,w,h,22,0x55000000);
+            rr(x,y,w,h,22,0xff14202B);
+            rrs(x,y,w,h,22,over?0xff96555A:0xff466878,1.3f);
+            rr(x+17,y+19,4f,h-50f,2f,color);
 
-            // Sombra, painel e acabamento discretos no padrão noturno do launcher.
-            rr(x+8,y+12,w,h,26,0x77000000);
-            rr(x,y,w,h,26,0xff15202B);
-            rrs(x,y,w,h,26,over?0xff9B494B:0xff486C7D,1.6f);
-            rr(x+20,y+19,5,147,2.5f,lineColor);
+            // Placa de limite com circulos geometricos e borda vermelha.
+            float signX=x+91f,signY=y+95f;
+            circle(signX,signY,59f,0xffEEF2F4);
+            circle(signX,signY,51f,0xffD83B42);
+            circle(signX,signY,40f,Color.WHITE);
+            String maximum=limit>0?String.valueOf(limit):"?";
+            float typeSize=maximum.length()>3?30f:maximum.length()>2?35f:43f;
+            text(maximum,signX,signY+typeSize*.34f,typeSize,0xff121921,
+                    tfBold,Paint.Align.CENTER,0);
 
-            // Placa real de limite de velocidade, em tamanho legível.
-            float signX=x+38,signY=y+27,signW=124,signH=137;
-            rr(signX,signY,signW,signH,19,0xffF0F3F5);
-            circle(signX+signW/2f,signY+signH/2f,48,0xffE23838);
-            circle(signX+signW/2f,signY+signH/2f,40,Color.WHITE);
-            String displayedLimit=lim>0?String.valueOf(lim):"?";
-            float limFont=displayedLimit.length()>3?31f:displayedLimit.length()>2?38f:44f;
-            text(displayedLimit,signX+signW/2f,signY+signH/2f+limFont*.34f,
-                    limFont,Color.BLACK,tfBold,Paint.Align.CENTER,0);
+            // Titulo pequeno e distancia dominante (atualizada entre fixes GPS).
+            final float infoX=x+170f;
+            text(fit(pardalRadar.kind(),17,tfBold,over?190f:310f),
+                    infoX,y+47f,17,muted,tfBold,Paint.Align.LEFT,.05f);
+            if(over)text("REDUZA",x+w-21f,y+47f,16,0xffFF857D,tfBold,
+                    Paint.Align.RIGHT,.04f);
+            text(d+" m",infoX,y+111f,56,Color.WHITE,tfBold,Paint.Align.LEFT,0f);
+            text("ATUAL  "+pardalRadar.speed()+" km/h",infoX,y+148f,19,
+                    over?0xffFFA099:0xff81D8CA,tfMed,Paint.Align.LEFT,0f);
+            text(fit(pardalRadar.gpsStatus(),12,tfReg,170f),
+                    x+w-19f,y+148f,12,muted,tfReg,Paint.Align.RIGHT,0f);
 
-            // Hierarquia OEM: tipo, distância dominante, velocidade atual.
-            float infoX=x+186;
-            text(fit(pardalRadar.kind(),17,tfBold,over?199f:346f),
-                    infoX,y+52,17,secondary,tfBold,Paint.Align.LEFT,.04f);
-            if(over)text("REDUZA",x+w-24,y+52,15,0xffFF7770,
-                    tfBold,Paint.Align.RIGHT,.06f);
-            text(d+" m",infoX,y+119,58,Color.WHITE,tfBold,Paint.Align.LEFT,0);
-            text("ATUAL  "+pardalRadar.speed()+" km/h",infoX,y+157,19,
-                    over?0xffFF8B83:0xff79D7C1,tfMed,Paint.Align.LEFT,0);
-
-            // Barra de aproximação de 350 a 0 m: sem excesso de elementos.
-            float barX=x+25,barY=y+185,barW=w-50f;
-            rr(barX,barY,barW,6f,3f,0xff33424D);
-            rr(barX,barY,barW*Math.max(0f,Math.min(1f,(350f-d)/350f)),
-                    6f,3f,lineColor);
-            text("APROXIMAÇÃO",barX,y+210,12,0xff8497A7,tfMed,Paint.Align.LEFT,.04f);
-            text("350 m  →  0 m",x+w-25,y+210,12,0xff8497A7,
-                    tfMed,Paint.Align.RIGHT,0);
+            // Progresso fino e continuo, sem barras que encubram o aviso.
+            float left=x+20f,top=y+174f,width=w-40f;
+            rr(left,top,width,5f,2.5f,0xff31404C);
+            float fraction=Math.max(0f,Math.min(1f,(350f-d)/350f));
+            if(fraction>.005f)rr(left,top,width*fraction,5f,2.5f,color);
+            text("APROXIMAÇÃO",left,y+197f,12,0xff8193A2,tfMed,
+                    Paint.Align.LEFT,.04f);
+            text("350 → 0 m",x+w-20f,y+197f,12,0xff8193A2,tfMed,
+                    Paint.Align.RIGHT,0f);
         }
         void drawAlertPopup() {
             long now = SystemClock.uptimeMillis();
