@@ -114,6 +114,22 @@ final class SoundEngine {
             sp.edit().putBoolean("loud_on", false).putBoolean("autovol_on", false)
                     .putBoolean("loudness_optin_176", true).apply();
         }
+        // v1.79: restaurar neutralidade uma unica vez, preservando
+        // as curvas do usuario e os presets personalizados salvos.
+        if (!sp.getBoolean("eq_neutral_start_179", false)) {
+            on = false;
+            java.util.Arrays.fill(band, 0f);
+            pre = 0f;
+            presetName = "Plano";
+            loudOn = false;
+            lowTone = highTone = bass = 0f;
+            autoVolOn = false;
+            sp.edit().putBoolean("on", false).putString("bands", join(band))
+                    .putFloat("pre", 0f).putString("preset", "Plano")
+                    .putBoolean("loud_on", false).putBoolean("autovol_on", false)
+                    .putFloat("low_tone", 0f).putFloat("high_tone", 0f)
+                    .putFloat("bass", 0f).putBoolean("eq_neutral_start_179", true).apply();
+        }
     }
 
     // ------------------------------------------------------------ persistência
@@ -215,7 +231,7 @@ final class SoundEngine {
     };
 
     private void tick() {
-        if (on && eq == null && sessEq.isEmpty()) {
+        if (on && !compare && !neutralPassThrough() && eq == null && sessEq.isEmpty()) {
             ensureEffect();
             if (eq != null) applyNow();
         }
@@ -261,7 +277,8 @@ final class SoundEngine {
     }
 
     private void ensureEffect() {
-        if (!on && !testing()) return;
+        if ((!on && !testing()) || (neutralPassThrough() && !testing())
+                || (compare && !testing())) return;
         if (eq != null || !sessEq.isEmpty()) return;
         long now = SystemClock.elapsedRealtime();
         if (now < retryAt) return;
@@ -286,7 +303,8 @@ final class SoundEngine {
     }
 
     private void openSession(int s) {
-        if((!on&&!testing())||s<=0||effectOk||sessEq.containsKey(s))return;
+        if((!on&&!testing())||(neutralPassThrough()&&!testing())
+                ||(compare&&!testing())||s<=0||effectOk||sessEq.containsKey(s))return;
         Equalizer e=null;
         try{
             e=new Equalizer(0,s);
@@ -342,10 +360,12 @@ final class SoundEngine {
         float lowDb=k*EqMath.LOUD_LOW_DB,highDb=k*EqMath.LOUD_HIGH_DB;
         float headroom=-0.25f*Math.max(lowDb,highDb);
         for(int b=0;b<n;b++){
-            float lo=profile.ranges[b][0],hi=profile.ranges[b][1];
-            out[b]=EqMath.bandDb(band,lo,hi,pre+headroom,lowDb,highDb);
+            // Usa o centro REAL de cada banda fisica: nao dilui os
+            // ajustes finos na media de uma faixa nativa muito larga.
+            float mid=Math.max(25f,profile.centers[b]);
+            out[b]=EqMath.curveDb(band,mid)+pre+headroom
+                    +EqMath.loudShape(mid,lowDb,highDb);
             // Tonalidade e reforco manuais (nao confundidos com as barras do EQ).
-            float mid=(lo+hi)*.5f;
             if(mid<170f)out[b]+=lowTone;
             else if(mid<380f)out[b]+=lowTone*.45f;
             if(mid>4500f)out[b]+=highTone;
@@ -356,9 +376,20 @@ final class SoundEngine {
         return out;
     }
 
+    /** Um EQ plano realmente transparente nao instancia nem liga efeitos. */
+    boolean neutralPassThrough() {
+        if (!on || loudOn || testing() || pre != 0f
+                || lowTone != 0f || highTone != 0f || bass != 0f) return false;
+        for (float db : band) if (db != 0f) return false;
+        return true;
+    }
+
     void applyNow() {
         boolean testingNow=testing();
-        if(!on&&!testingNow){
+        // Na Jancar ate um efeito Android em 0 dB pode colorir o som.
+        // Liberar o efeito em plano/Comparar preserva a saida original.
+        if ((!on && !testingNow) || (on && !testingNow
+                && (compare || neutralPassThrough()))) {
             h.removeCallbacks(smoothTask);
             loudTarget=loudCur=0f;
             releaseEffects();
@@ -367,7 +398,9 @@ final class SoundEngine {
                 try{e.release();}catch(Exception ignored){}
             }
             sessEq.clear();
-            status="Som original Jancar: sem processamento do launcher";
+            status=compare && on ? "Comparacao: som original Jancar"
+                    : on ? "EQ plano (0 dB): som original Jancar, sem efeito"
+                    : "Som original Jancar: sem processamento do launcher";
             return;
         }
         ensureEffect();
@@ -474,12 +507,28 @@ final class SoundEngine {
         if(pre==next)return;
         pre=next;markUser();changed();
     }
-    void setOn(boolean v) { on = v; changed(); }
+    void setOn(boolean v) {
+        if (on == v) return;
+        on = v;
+        compare = false;
+        if (v) {
+            // Toda ativacao manual inicia plano, sem pre-ganho ou reforcos.
+            // userBand, userPre e presets salvos continuam disponiveis.
+            java.util.Arrays.fill(band, 0f);
+            pre = 0f;
+            presetName = "Plano";
+            loudOn = false;
+            loudTarget = loudCur = 0f;
+            h.removeCallbacks(smoothTask);
+            lowTone = highTone = bass = 0f;
+        }
+        changed();
+    }
     void reset() { java.util.Arrays.fill(band, 0f); pre = 0f; presetName = "Plano"; changed(); }
     void applyPreset(String name) {
         if ("Usuário".equals(name)) { System.arraycopy(userBand, 0, band, 0, EqMath.N); pre = userPre; presetName = name; changed(); return; }
         for (int i = 0; i < EqMath.PRESET_NAMES.length; i++) if (EqMath.PRESET_NAMES[i].equals(name)) {
-            System.arraycopy(EqMath.PRESETS[i], 0, band, 0, EqMath.N); pre = EqMath.autoPre(band); presetName = name; changed(); return;
+            System.arraycopy(EqMath.PRESETS[i], 0, band, 0, EqMath.N); pre = 0f; presetName = name; changed(); return;
         }
         int c = customNames.indexOf(name);
         if (c >= 0) { System.arraycopy(customBands.get(c), 0, band, 0, EqMath.N); pre = customPre.get(c); presetName = name; changed(); }

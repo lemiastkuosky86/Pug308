@@ -5695,7 +5695,7 @@ public class MainActivity extends Activity {
             // rodapé
             button(7, 32, 656, 150, 48, "Redefinir", false);
             button(8, 194, 656, 190, 48, snd.compare ? "Ouvindo original" : "Comparar", snd.compare);
-            tr((snd.effectOk ? "●  " : "○  ") + fit(snd.statusLine(), 15, tfReg, 820), 1248, 686, 15, snd.effectOk ? cMuted : cBad, tfReg);
+            tr((snd.effectOk ? "●  " : "○  ") + fit(snd.statusLine(), 15, tfReg, 820), 1248, 686, 15, (snd.effectOk || snd.neutralPassThrough() || !snd.on) ? cMuted : cBad, tfReg);
         }
         Path curvePath(float[] g, boolean fillClose) {
             int n = EqMath.N; float[] xs = new float[n + 2], ys = new float[n + 2];
