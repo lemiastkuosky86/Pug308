@@ -2752,10 +2752,6 @@ public class MainActivity extends Activity {
         final float homeScreenBrightness=getWindow().getAttributes().screenBrightness;
         final View clock=new View(this) {
             final Paint paint=new Paint(Paint.ANTI_ALIAS_FLAG);
-            // Céu noturno simples: poucos pontos, sem bitmap/blur/threads.
-            // Intervalos, trajetórias e brilho são independentes e aleatórios.
-            final java.util.Random skyRandom=new java.util.Random(
-                    SystemClock.uptimeMillis() ^ 308172L);
             // Estrelas nascem em posições aleatórias e desaparecem por completo.
             // Reutiliza um conjunto fixo de posições: nenhum bitmap, thread ou alocação por frame.
             final float[][] skyStars=new float[36][4];
