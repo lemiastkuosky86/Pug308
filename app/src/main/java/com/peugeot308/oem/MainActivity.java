@@ -5563,8 +5563,14 @@ public class MainActivity extends Activity {
         }
         void vslider(int regId, int resetId, float cx, float val, String label) {
             float top = 440, bot = 586, y0 = (top + bot) / 2, yv = bot - (val + 12f) / 24f * (bot - top); boolean dr = dragId == regId;
-            boolean pr = hit(resetId, cx - 46, 380, 92, 34); // toque no valor = zerar
-            tc(EqMath.db(val), cx, 406, 26, pr ? accent : (val != 0 ? cText : cMuted), tfBold);
+            // Ajuste fino independente de arrastar: - / + = 0,5 dB exatos.
+            // Tocar no número central continua zerando a faixa.
+            boolean pr = hit(resetId, cx - 19, 380, 38, 34);
+            hit(500 + regId, cx - 49, 380, 28, 34);
+            hit(600 + regId, cx + 21, 380, 28, 34);
+            tc("−", cx - 39, 405, 19, accent, tfMed);
+            tc(EqMath.db(val), cx, 405, 19, pr ? accent : (val != 0 ? cText : cMuted), tfBold);
+            tc("+", cx + 39, 405, 19, accent, tfMed);
             rr(cx - 8, top - 12, 16, bot - top + 24, 8, cTrack);
             ln(cx - 24, y0, cx + 24, y0, cDim, 2);
             float a = Math.min(y0, yv), b = Math.max(y0, yv); if (b - a > 1) rr(cx - 8, a, 16, b - a, 8, accent);
@@ -5727,6 +5733,7 @@ public class MainActivity extends Activity {
             wrap(snd.statusLine(), 684, 454, 15, snd.effectOk ? cText : cBad, tfMed, 525, 21);
             wrap("Teste por 4 s. Se o som não mudar, use os ajustes originais da Jancar.",684,522,14,cDim,tfReg,525,19);
             button(52, 684, 582, 280, 46, snd.testing() ? "Testando… ouça" : "Testar efeito (4 s)", snd.testing());
+            button(53, 983, 582, 239, 46, "Bandas reais", false);
         }
 
         // ---------- aba 3: campo sonoro
@@ -5781,6 +5788,10 @@ public class MainActivity extends Activity {
         void handleEq(int id) {
             feedback();
             if (id >= 200 && id < 400) { ArrayList<String> l = presetList(); if (id - 200 < l.size()) snd.applyPreset(l.get(id - 200)); return; }
+            if(id >= 500+R_BAND && id < 500+R_BAND+EqMath.N){int i=id-500-R_BAND;snd.setBand(i,snd.band[i]-.5f);return;}
+            if(id >= 600+R_BAND && id < 600+R_BAND+EqMath.N){int i=id-600-R_BAND;snd.setBand(i,snd.band[i]+.5f);return;}
+            if(id==500+R_PRE){snd.setPre(snd.pre-.5f);return;}
+            if(id==600+R_PRE){snd.setPre(snd.pre+.5f);return;}
             if (id >= 30 && id <= 39) { snd.setBand(id - 30, 0f); return; }
             if (id >= 60 && id <= 63) {
                 float[][] pts = {{-0.24f, -0.39f}, {0f, 0f}, {0.24f, -0.39f}, {0f, 0.35f}}; String[] fn = {"Motorista", "Todos", "Passageiro", "Traseiros"};
@@ -5797,6 +5808,7 @@ public class MainActivity extends Activity {
                 case 50: snd.setLoudOn(!snd.loudOn); break;
                 case 51: snd.setAutoVol(!snd.autoVolOn); refreshGpsNeed(); break;
                 case 52: snd.testEffect(); handler.postDelayed(this::invalidate, 4200); break;
+                case 53: popupInfo("Diagnóstico do equalizador",snd.bandsReport()); break;
                 default: break;
             }
         }

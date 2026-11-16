@@ -15,6 +15,7 @@ import android.os.SystemClock;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.Locale;
 
 /**
  * Motor de som do launcher (v1.14): equalizador de 10 bandas sobre o equalizador do Android,
@@ -48,7 +49,7 @@ final class SoundEngine {
     final ArrayList<String> customNames = new ArrayList<>();
     final ArrayList<float[]> customBands = new ArrayList<>();
     final ArrayList<Float> customPre = new ArrayList<>();
-    boolean loudOn = true;
+    boolean loudOn = false; // Opt-in: evita mudança espontânea do timbre/ganho
     float loudAmt = 0.6f;     // 0..1
     float loudBelow = 0.55f;  // volume (fração) abaixo do qual o loudness age
     boolean autoVolOn = false;
@@ -74,6 +75,23 @@ final class SoundEngine {
     private Equalizer eq; private BassBoost bb;
     private float[][] edges; private long retryAt = 0;
     private final HashMap<Integer, Equalizer> sessEq = new HashMap<>();
+    // Metadados de CADA instancia: global e sessoes podem ter faixas distintas.
+    // Ultimos comandos em mB evitam writes redundantes e o som "mudando sozinho".
+    private static final class DeviceProfile {
+        final int n;
+        final float[][] ranges;
+        final float[] centers;
+        final short lowMb, highMb;
+        final int[] lastMb;
+        boolean enabled;
+        DeviceProfile(int n, float[][] ranges, float[] centers, short lowMb, short highMb) {
+            this.n=n; this.ranges=ranges; this.centers=centers;
+            this.lowMb=lowMb;this.highMb=highMb;
+            this.lastMb=new int[n];
+            java.util.Arrays.fill(lastMb,Integer.MIN_VALUE);
+        }
+    }
+    private final HashMap<Equalizer, DeviceProfile> profiles = new HashMap<>();
     private boolean started = false;
     private BroadcastReceiver sessionReceiver, volumeReceiver;
 
@@ -88,6 +106,14 @@ final class SoundEngine {
                     .putBoolean("jancar_audio_passthrough_175", true).apply();
         }
         load();
+        // Migracao v1.76: loudness deixa de ser automatico ate o usuario reativar.
+        // Valores das bandas, presets, pre e ajustes de tonalidade sao mantidos.
+        if (!sp.getBoolean("loudness_optin_176", false)) {
+            loudOn = false;
+            autoVolOn = false;
+            sp.edit().putBoolean("loud_on", false).putBoolean("autovol_on", false)
+                    .putBoolean("loudness_optin_176", true).apply();
+        }
     }
 
     // ------------------------------------------------------------ persistência
@@ -122,7 +148,7 @@ final class SoundEngine {
             float[] b = new float[EqMath.N];
             try { if (parse(f[1], b) && !cleanName(f[0]).isEmpty()) { customNames.add(cleanName(f[0])); customBands.add(b); customPre.add(Float.parseFloat(f[2])); } } catch (Exception ignored) {}
         }
-        loudOn = sp.getBoolean("loud_on", true);
+        loudOn = sp.getBoolean("loud_on", false);
         loudAmt = EqMath.clamp(sp.getFloat("loud_amt", 0.6f), 0f, 1f);
         loudBelow = EqMath.clamp(sp.getFloat("loud_below", 0.55f), 0.15f, 1f);
         autoVolOn = sp.getBoolean("autovol_on", false);
@@ -189,119 +215,173 @@ final class SoundEngine {
     };
 
     private void tick() {
-        ensureEffect();
-        volumeChanged();
-        autoVolumeStep();
-        // saúde do efeito: se o sistema de áudio reiniciou, o efeito some; recria e reaplica
+        if (on && eq == null && sessEq.isEmpty()) {
+            ensureEffect();
+            if (eq != null) applyNow();
+        }
+        if (on && loudOn) volumeChanged();
+        if (autoVolOn || autoOffset != 0) autoVolumeStep();
+        // A ROM pode reiniciar o servico de audio: recria so quando perder o efeito.
         if (eq != null) { try { eq.getEnabled(); } catch (Exception e) { releaseEffects(); ensureEffect(); applyNow(); } }
     }
 
     // ------------------------------------------------------------ efeitos
     private void releaseEffects() {
+        if (eq != null) profiles.remove(eq);
         try { if (eq != null) eq.release(); } catch (Exception ignored) {}
         try { if (bb != null) bb.release(); } catch (Exception ignored) {}
         eq = null; bb = null; effectOk = false;
     }
 
+    /** Lê os limites REAIS do equalizador; só aproxima quando a ROM não os fornece. */
+    private DeviceProfile inspectDevice(Equalizer e) {
+        int n=e.getNumberOfBands();
+        if(n<1||n>64)throw new IllegalStateException("Quantidade de bandas invalida: "+n);
+        short[] limits=e.getBandLevelRange();
+        if(limits==null||limits.length<2)throw new IllegalStateException("Limites de ganho ausentes");
+        float[][] bands=new float[n][2];
+        float[] centers=new float[n];
+        boolean valid=true;
+        for(int i=0;i<n;i++){
+            try {
+                centers[i]=e.getCenterFreq((short)i)/1000f; // milliHz -> Hz
+                int[] hz=e.getBandFreqRange((short)i);
+                if(hz!=null&&hz.length==2){
+                    bands[i][0]=hz[0]/1000f;
+                    bands[i][1]=hz[1]/1000f;
+                }
+                if(bands[i][0]<10f||bands[i][1]<=bands[i][0]||centers[i]<=0f)
+                    valid=false;
+            }catch(Exception ex){valid=false;}
+            if(centers[i]<=0f)
+                centers[i]=(float)Math.exp(Math.log(60.0)+i*(Math.log(16000.0)-Math.log(60.0))/Math.max(1,n-1));
+        }
+        if(!valid)bands=EqMath.edgesFromCenters(centers);
+        return new DeviceProfile(n,bands,centers,limits[0],limits[1]);
+    }
+
     private void ensureEffect() {
-        // Nao criar nem assumir a sessao global de audio enquanto o EQ estiver desligado.
         if (!on && !testing()) return;
-        if (eq != null) return;
+        if (eq != null || !sessEq.isEmpty()) return;
         long now = SystemClock.elapsedRealtime();
         if (now < retryAt) return;
+        Equalizer e=null;
         try {
-            Equalizer e = new Equalizer(0, 0); // sessão 0 = mistura global de saída
-            int n = e.getNumberOfBands();
-            short[] r = e.getBandLevelRange();
-            float[] centers = new float[n];
-            float[][] ed = new float[n][2]; boolean edOk = true;
-            for (short b = 0; b < n; b++) {
-                centers[b] = e.getCenterFreq(b) / 1000f;
-                int[] fr = e.getBandFreqRange(b);
-                ed[b][0] = fr[0] / 1000f; ed[b][1] = fr[1] / 1000f;
-                if (ed[b][1] <= ed[b][0] || ed[b][1] <= 0) edOk = false;
-            }
-            edges = edOk ? ed : EqMath.edgesFromCenters(centers);
-            nBands = n; minDb = r[0] / 100f; maxDb = r[1] / 100f;
-            eq = e; effectOk = true;
-            status = "Equalizador do Android ativo (efeito global) • " + n + " bandas • ±" + Math.round(maxDb) + " dB";
-        } catch (Throwable t) {
-            eq = null; effectOk = false; retryAt = now + 20000;
-            status = sessEq.isEmpty() ? "Efeito global indisponível nesta central (" + t.getClass().getSimpleName() + ")" : "Ativo por aplicativo (" + sessEq.size() + ")";
+            e=new Equalizer(0,0); // Sessao global, apenas se habilitado pelo usuario
+            DeviceProfile profile=inspectDevice(e);
+            profiles.put(e,profile);
+            eq=e;
+            nBands=profile.n;edges=profile.ranges;
+            minDb=profile.lowMb/100f;maxDb=profile.highMb/100f;
+            effectOk=true;
+            status="Equalizador Android global • "+nBands+" bandas reais";
+        } catch(Throwable t) {
+            if(e!=null)try{e.release();}catch(Exception ignored){}
+            eq=null;effectOk=false;retryAt=now+20000;
+            status=sessEq.isEmpty()
+                    ?"Efeito global indisponível ("+t.getClass().getSimpleName()+")"
+                    :"Ativo por aplicativo ("+sessEq.size()+")";
         }
-        try { // BassBoost é opcional; se faltar, só o equalizador funciona
-            if (bb == null && eq != null) bb = new BassBoost(0, 0);
-        } catch (Throwable t) { bb = null; }
+        // BassBoost nativo nao e usado; evita DSP duplicado e ganho inesperado.
     }
 
     private void openSession(int s) {
-        if ((!on && !testing()) || s <= 0 || effectOk || sessEq.containsKey(s)) return; // só se o efeito global não funcionou
-        try { Equalizer e = new Equalizer(0, s); sessEq.put(s, e); if (nBands == 0) { nBands = e.getNumberOfBands(); } applyNow(); status = "Ativo por aplicativo (" + sessEq.size() + ")"; } catch (Throwable ignored) {}
+        if((!on&&!testing())||s<=0||effectOk||sessEq.containsKey(s))return;
+        Equalizer e=null;
+        try{
+            e=new Equalizer(0,s);
+            DeviceProfile profile=inspectDevice(e);
+            sessEq.put(s,e);profiles.put(e,profile);
+            nBands=profile.n;edges=profile.ranges;
+            minDb=profile.lowMb/100f;maxDb=profile.highMb/100f;
+            applyNow();
+            status="EQ por aplicativo • "+profile.n+" bandas reais";
+        }catch(Throwable t){if(e!=null)try{e.release();}catch(Exception ignored){}}
     }
-    private void closeSession(int s) { Equalizer e = sessEq.remove(s); if (e != null) try { e.release(); } catch (Exception ignored) {} }
+    private void closeSession(int s) {
+        Equalizer e=sessEq.remove(s);
+        if(e!=null){profiles.remove(e);try{e.release();}catch(Exception ignored){}}
+    }
 
-    private void setLevels(Equalizer e, float[] dbs, boolean active) throws Exception {
-        if (!active) { e.setEnabled(false); return; }
-        short lo = e.getBandLevelRange()[0], hi = e.getBandLevelRange()[1];
-        for (short b = 0; b < dbs.length && b < e.getNumberOfBands(); b++) {
-            int mb = Math.round(dbs[b] * 100f);
-            e.setBandLevel(b, (short) Math.max(lo, Math.min(hi, mb)));
+    /** Só envia os níveis quantizados que mudaram. Cada sessão usa seus PRÓPRIOS Hz. */
+    private void setLevels(Equalizer e, boolean active) throws Exception {
+        DeviceProfile profile=profiles.get(e);
+        if(profile==null){
+            profile=inspectDevice(e);
+            profiles.put(e,profile);
         }
-        e.setEnabled(true);
+        if(!active){
+            if(profile.enabled){e.setEnabled(false);profile.enabled=false;}
+            return;
+        }
+        float[] dbs=targetLevels(profile);
+        for(short b=0;b<profile.n;b++){
+            int mb=Math.max(profile.lowMb,Math.min(profile.highMb,Math.round(dbs[b]*100f)));
+            if(profile.lastMb[b]!=mb){
+                e.setBandLevel(b,(short)mb);
+                profile.lastMb[b]=mb;
+            }
+        }
+        if(!profile.enabled){
+            e.setEnabled(true);
+            profile.enabled=true;
+        }
     }
 
-    /** Níveis finais (dB) por faixa real do Android: curva + pré + loudness. */
-    float[] targetLevels() {
-        int n = Math.max(1, nBands);
-        float[] out = new float[n];
-        if (testUntil > SystemClock.elapsedRealtime()) { // teste: graves +9 dB e agudos −9 dB, bem audível sem exagerar
-            for (int b = 0; b < n; b++) out[b] = b < (n + 1) / 2 ? Math.min(maxDb, 9f) : Math.max(minDb, -9f);
+    /** Valor pedido, em dB, a CADA banda fisica, com frequencias fornecidas pela ROM. */
+    private float[] targetLevels(DeviceProfile profile) {
+        int n=profile.n;
+        float[] out=new float[n];
+        if(testing()){
+            for(int b=0;b<n;b++)
+                out[b]=b<(n+1)/2?Math.min(profile.highMb/100f,9f)
+                        :Math.max(profile.lowMb/100f,-9f);
             return out;
         }
-        float k = loudOn ? loudCur * loudAmt : 0f;
-        float lowDb = k * EqMath.LOUD_LOW_DB, highDb = k * EqMath.LOUD_HIGH_DB;
-        float headroom = -0.25f * Math.max(lowDb, highDb); // com volume baixo sobra margem; só um pouco de folga
-        for (int b = 0; b < n; b++) {
-            float lo = edges != null && b < edges.length ? edges[b][0] : 25f, hi = edges != null && b < edges.length ? edges[b][1] : 20000f;
-            out[b] = EqMath.bandDb(band, lo, hi, pre + headroom, lowDb, highDb);
-            // Reforço progressivo de graves pela mesma cadeia EQ já testada na central.
-            // Evita o BassBoost nativo que em alguns firmwares inverte a sensação de graves.
+        float k=loudOn?loudCur*loudAmt:0f;
+        float lowDb=k*EqMath.LOUD_LOW_DB,highDb=k*EqMath.LOUD_HIGH_DB;
+        float headroom=-0.25f*Math.max(lowDb,highDb);
+        for(int b=0;b<n;b++){
+            float lo=profile.ranges[b][0],hi=profile.ranges[b][1];
+            out[b]=EqMath.bandDb(band,lo,hi,pre+headroom,lowDb,highDb);
+            // Tonalidade e reforco manuais (nao confundidos com as barras do EQ).
             float mid=(lo+hi)*.5f;
-            if (mid < 170f) out[b] += lowTone;
-            else if (mid < 380f) out[b] += lowTone * .45f;
-            if (mid > 4500f) out[b] += highTone;
-            else if (mid > 2300f) out[b] += highTone * .45f;
-            if(mid < 110f) out[b] += bass * 1.5f;
-            else if(mid < 170f) out[b] += bass * 0.5f;
+            if(mid<170f)out[b]+=lowTone;
+            else if(mid<380f)out[b]+=lowTone*.45f;
+            if(mid>4500f)out[b]+=highTone;
+            else if(mid>2300f)out[b]+=highTone*.45f;
+            if(mid<110f)out[b]+=bass*1.5f;
+            else if(mid<170f)out[b]+=bass*.5f;
         }
         return out;
     }
 
     void applyNow() {
-        boolean testingNow = testing();
-        if (!on && !testingNow) {
-            // Desligado significa passthrough real: soltar as instancias criadas pelo
-            // launcher para deixar o processamento de audio com a Jancar.
+        boolean testingNow=testing();
+        if(!on&&!testingNow){
             h.removeCallbacks(smoothTask);
-            loudTarget = loudCur = 0f;
+            loudTarget=loudCur=0f;
             releaseEffects();
-            for (Equalizer e : new ArrayList<>(sessEq.values())) {
-                try { e.release(); } catch (Exception ignored) {}
+            for(Equalizer e:new ArrayList<>(sessEq.values())){
+                profiles.remove(e);
+                try{e.release();}catch(Exception ignored){}
             }
             sessEq.clear();
-            status = "Som original Jancar: sem processamento do launcher";
+            status="Som original Jancar: sem processamento do launcher";
             return;
         }
         ensureEffect();
-        boolean active = on && !compare;
-        float[] dbs = targetLevels();
-        if (testingNow) active = true;
-        if (eq != null) {
-            try { setLevels(eq, dbs, active); } catch (Exception e) { releaseEffects(); }
+        boolean active=(on&&!compare)||testingNow;
+        if(eq!=null){
+            try{setLevels(eq,active);}
+            catch(Exception e){releaseEffects();status="EQ global indisponível: "+e.getClass().getSimpleName();}
         }
-        // BassBoost separado desativado: o ganho dos graves acima é aplicado pelo EQ.
-        if (bb != null) { try { bb.setEnabled(false); } catch (Exception ignored) {} }
-        for (Equalizer e : new ArrayList<>(sessEq.values())) { try { setLevels(e, dbs, active); } catch (Exception ex) { /* sessão morreu */ } }
+        // Nunca habilitar BassBoost nativo em paralelo ao EQ.
+        if(bb!=null)try{bb.setEnabled(false);}catch(Exception ignored){}
+        for(Equalizer e:new ArrayList<>(sessEq.values())){
+            try{setLevels(e,active);}
+            catch(Exception ex){profiles.remove(e);try{e.release();}catch(Exception ignored){}}
+        }
     }
 
     /** Teste audível de 4 s: se o som não mudar, a central não aceita efeitos do Android. */
@@ -320,9 +400,11 @@ final class SoundEngine {
     }
 
     void volumeChanged() {
-        if (!on && !testing()) {
+        if ((!on && !testing()) || !loudOn) {
             h.removeCallbacks(smoothTask);
+            boolean wasActive = loudCur != 0f;
             loudTarget = loudCur = 0f;
+            if (wasActive && on) applyNow();
             return;
         }
         float vf = volumeFraction();
@@ -381,8 +463,17 @@ final class SoundEngine {
         presetName = "Usuário";
         System.arraycopy(band, 0, userBand, 0, EqMath.N); userPre = pre;
     }
-    void setBand(int i, float v) { band[i] = EqMath.snap(v); markUser(); changed(); }
-    void setPre(float v) { pre = EqMath.snap(v); markUser(); changed(); }
+    void setBand(int i, float v) {
+        if(i<0||i>=band.length)return;
+        float next=EqMath.snap(v);
+        if(band[i]==next)return; // sem escrita ao arrastar dentro do mesmo 0,5 dB
+        band[i]=next;markUser();changed();
+    }
+    void setPre(float v) {
+        float next=EqMath.snap(v);
+        if(pre==next)return;
+        pre=next;markUser();changed();
+    }
     void setOn(boolean v) { on = v; changed(); }
     void reset() { java.util.Arrays.fill(band, 0f); pre = 0f; presetName = "Plano"; changed(); }
     void applyPreset(String name) {
@@ -416,7 +507,16 @@ final class SoundEngine {
     void setLoudOn(boolean v) { loudOn = v; volumeChanged(); changed(); }
     void setLoudAmt(float v) { loudAmt = EqMath.clamp(v, 0f, 1f); changed(); }
     void setLoudBelow(float v) { loudBelow = EqMath.clamp(v, 0.15f, 1f); volumeChanged(); changed(); }
-    void setAutoVol(boolean v) { autoVolOn = v; if (v) { autoBlocked = false; ignoredSets = 0; } saveSoon(); }
+    void setAutoVol(boolean v) {
+        if(!v && autoVolOn && autoOffset!=0 && baseVol>0 && !volumeBusy) {
+            try{audio.setStreamVolume(AudioManager.STREAM_MUSIC,baseVol,0);}
+            catch(Exception ignored){}
+        }
+        autoVolOn=v;
+        if(v){autoBlocked=false;ignoredSets=0;}
+        else{autoOffset=0;baseVol=-1;expectVol=-1;autoGate=0;}
+        saveSoon();
+    }
     void setAutoVolMax(int v) { autoVolMax = Math.max(1, Math.min(6, v)); saveSoon(); }
     void setBass(float v) { bass = EqMath.clamp(v, 0f, 1f); changed(); }
     void setLowTone(float v) { lowTone = EqMath.clamp(v, -6f, 6f); changed(); }
@@ -438,6 +538,39 @@ final class SoundEngine {
                 .putExtra("bass", Math.round(bass * 10f)).putExtra("x", padX).putExtra("y", padY);
             ctx.sendBroadcast(i);
         } catch (Exception ignored) {}
+    }
+
+    /** Diagnostico honesto: bandas virtuais versus nativas, frequencias e leitura do Android.
+     *  Nao afirma efeito audivel na Jancar (MCU/DSP pode ignorar).
+     */
+    String bandsReport() {
+        StringBuilder result=new StringBuilder();
+        result.append("Controles na tela: ").append(EqMath.N).append(" (passos de 0,5 dB)\n");
+        result.append("Estado: ").append(on?"EQ ligado":"som original / EQ desligado").append("\n");
+        result.append("Loudness: ").append(loudOn?"ligado":"desligado").append("\n");
+        result.append("Pré-ganho: ").append(EqMath.db(pre)).append(" dB\n");
+        Equalizer target=eq;
+        if(target==null&&!sessEq.isEmpty())target=sessEq.values().iterator().next();
+        DeviceProfile info=target==null?null:profiles.get(target);
+        if(info==null){
+            result.append("Bandas nativas: não identificadas. Ligue o EQ para consultar.");
+            return result.toString();
+        }
+        result.append("Bandas nativas: ").append(info.n).append("\n");
+        if(info.n<EqMath.N)result.append("Alguns controles compartilham filtros físicos; ganho independente não é possível.\n");
+        float[] levels=targetLevels(info);
+        for(int i=0;i<info.n;i++){
+            result.append(i+1).append(". ")
+                .append(Math.round(info.centers[i])).append(" Hz: pedido ")
+                .append(String.format(Locale.US,"%+.2f",levels[i])).append(" dB");
+            try{
+                result.append(" / Android ")
+                    .append(String.format(Locale.US,"%+.2f",target.getBandLevel((short)i)/100f)).append(" dB");
+            }catch(Exception ignored){result.append(" / sem leitura");}
+            result.append("\n");
+        }
+        result.append("A leitura do Android não confirma a saída física da Jancar.");
+        return result.toString();
     }
 
     /** Linha de diagnóstico para a tela. */
