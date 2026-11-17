@@ -130,6 +130,18 @@ final class SoundEngine {
                     .putFloat("low_tone", 0f).putFloat("high_tone", 0f)
                     .putFloat("bass", 0f).putBoolean("eq_neutral_start_179", true).apply();
         }
+        // v1.80: por seguranca, volta ao DSP original da Jancar uma unica vez.
+        // Preserva os presets para testes futuros, mas nao reativa efeitos Android.
+        if (!sp.getBoolean("jancar_oem_default_180", false)) {
+            on = false;
+            compare = false;
+            loudOn = false;
+            autoVolOn = false;
+            loudTarget = loudCur = 0f;
+            sp.edit().putBoolean("on", false).putBoolean("loud_on", false)
+                    .putBoolean("autovol_on", false)
+                    .putBoolean("jancar_oem_default_180", true).apply();
+        }
     }
 
     // ------------------------------------------------------------ persistência
