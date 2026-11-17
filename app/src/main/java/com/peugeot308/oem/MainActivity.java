@@ -1397,19 +1397,35 @@ public class MainActivity extends Activity {
     }
 
     private void openJancarSound() {
-        Intent query=new Intent(Intent.ACTION_MAIN);query.addCategory(Intent.CATEGORY_LAUNCHER);
-        List<android.content.pm.ResolveInfo> apps=getPackageManager().queryIntentActivities(query,0);
-        if(apps!=null)for(android.content.pm.ResolveInfo info:apps){
-            String name=info.loadLabel(getPackageManager()).toString().toLowerCase(Locale.ROOT);
-            String pkg=info.activityInfo.packageName.toLowerCase(Locale.ROOT);
-            if(name.equals("eq")||name.contains("equalizador")||name.contains("audio settings")||pkg.contains("audio.settings")){
-                try{
-                    Intent it=new Intent(query);it.setClassName(info.activityInfo.packageName,info.activityInfo.name);
-                    startActivity(it);return;
-                }catch(Exception ignored){}
-            }
+        // Evita dois equalizadores processando o mesmo som.
+        if (snd != null && snd.on) snd.setOn(false);
+        Intent query = new Intent(Intent.ACTION_MAIN);
+        query.addCategory(Intent.CATEGORY_LAUNCHER);
+        List<android.content.pm.ResolveInfo> apps = getPackageManager().queryIntentActivities(query, 0);
+        android.content.pm.ResolveInfo best = null;
+        int bestScore = 0;
+        if (apps != null) for (android.content.pm.ResolveInfo info : apps) {
+            if (info.activityInfo == null || getPackageName().equals(info.activityInfo.packageName)) continue;
+            String name = info.loadLabel(getPackageManager()).toString().toLowerCase(Locale.ROOT);
+            String pkg = info.activityInfo.packageName.toLowerCase(Locale.ROOT);
+            String act = info.activityInfo.name.toLowerCase(Locale.ROOT);
+            int score = 0;
+            if (name.equals("eq") || name.equals("dsp") || name.equals("equalizador")) score = 100;
+            else if (name.contains("equaliz") || name.contains("dsp")) score = 90;
+            else if (name.contains("sound effect") || name.contains("audio settings") || name.contains("ajustes de som")) score = 85;
+            else if (pkg.contains("audio.settings") || act.contains("equalizer") || act.contains("equaliz")) score = 80;
+            else if (name.equals("som") || name.equals("sound") || name.equals("audio")) score = 70;
+            if (score > bestScore) { bestScore = score; best = info; }
         }
-        snack("Ajustes de som da Jancar não encontrados. Abra o EQ original em Apps.");
+        if (best != null) {
+            try {
+                Intent it = new Intent(query);
+                it.setClassName(best.activityInfo.packageName, best.activityInfo.name);
+                startActivity(it);
+                return;
+            } catch (Exception ignored) {}
+        }
+        snack("EQ da Jancar não encontrado no menu. Abra pelo app original em Apps.");
     }
 
     // ---- Botões do carro (RT4) ----
@@ -5632,7 +5648,7 @@ public class MainActivity extends Activity {
                 if (sel) rr(x, 16, tw, 40, 20, accent);
                 tc(TABS[i], x + tw / 2, 43, 19, sel ? onAccent : cMuted, tfMed);
             }
-            text("ATIVO", 1152, 42, 15, cDim, tfBold, Paint.Align.RIGHT, .12f);
+            text("EQ ANDROID", 1152, 42, 15, cDim, tfBold, Paint.Align.RIGHT, .12f);
             toggle(5, 1166, 18, 82, 36, snd.on);
         }
 
@@ -5682,7 +5698,7 @@ public class MainActivity extends Activity {
             canvas.restore();
             for (int i = 0; i < EqMath.N; i++) { float cx = colX(i), cy = gy(snd.band[i]); circle(cx, cy, 12.5f, cc); circle(cx, cy, 6.5f, cSurfBot); }
             if (snd.loudOn && snd.loudCur > .03f && live) tr("- - -  com loudness no volume atual", 1236, 196, 14, cDim, tfReg);
-            if (!snd.on) tc("EQUALIZADOR DESLIGADO", 640, 262, 22, cMuted, tfBold);
+            if (!snd.on) tc("ÁUDIO ORIGINAL JANCAR • SEM FILTRO ANDROID", 640, 262, 22, cMuted, tfBold);
             else if (snd.compare) tc("OUVINDO O SOM ORIGINAL (SEM EQUALIZAÇÃO)", 640, 262, 22, accent, tfBold);
             regs.add(new float[]{R_GRAPH, pl - 24, pt - 16, pr2 - pl + 48, pb - pt + 32, pt, pb - pt});
 
@@ -5695,7 +5711,8 @@ public class MainActivity extends Activity {
             // rodapé
             button(7, 32, 656, 150, 48, "Redefinir", false);
             button(8, 194, 656, 190, 48, snd.compare ? "Ouvindo original" : "Comparar", snd.compare);
-            tr((snd.effectOk ? "●  " : "○  ") + fit(snd.statusLine(), 15, tfReg, 820), 1248, 686, 15, (snd.effectOk || snd.neutralPassThrough() || !snd.on) ? cMuted : cBad, tfReg);
+            button(9, 396, 656, 234, 48, "EQ original Jancar", false);
+            tr((snd.effectOk ? "●  " : "○  ") + fit(snd.statusLine(), 15, tfReg, 600), 1248, 686, 15, (snd.effectOk || snd.neutralPassThrough() || !snd.on) ? cMuted : cBad, tfReg);
         }
         Path curvePath(float[] g, boolean fillClose) {
             int n = EqMath.N; float[] xs = new float[n + 2], ys = new float[n + 2];
@@ -5713,7 +5730,7 @@ public class MainActivity extends Activity {
         void drawAdjTab() {
             card(32, 96, 600, 544);
             title("LOUDNESS DINÂMICO", 60, 140); toggle(50, 540, 114, 76, 36, snd.loudOn);
-            wrap("Reforça graves e agudos quando o volume está baixo e vai sumindo aos poucos conforme o volume sobe. Resolve o som abafado em volume baixo.", 60, 178, 17, cMuted, tfReg, 548, 24);
+            wrap("Compensação opcional do EQ Android. Não controla o DSP da Jancar e só funciona com o EQ Android ligado.", 60, 178, 17, cMuted, tfReg, 548, 24);
             t("Intensidade", 60, 262, 20, cText, tfMed); tr(Math.round(snd.loudAmt * 100) + "%", 608, 262, 20, accent, tfBold);
             hslider(R_LAMT, 70, 296, 528, snd.loudAmt, false);
             t("Começa a agir abaixo de", 60, 360, 20, cText, tfMed); tr(Math.round(snd.loudBelow * 100) + "% do volume", 608, 360, 20, accent, tfBold);
@@ -5745,7 +5762,7 @@ public class MainActivity extends Activity {
             card(656, 374, 592, 266);
             title("DIAGNÓSTICO", 684, 418);
             wrap(snd.statusLine(), 684, 454, 15, snd.effectOk ? cText : cBad, tfMed, 525, 21);
-            wrap("Teste por 4 s. Se o som não mudar, use os ajustes originais da Jancar.",684,522,14,cDim,tfReg,525,19);
+            wrap("Se o som baixar, desligue o EQ Android e abra o som original da Jancar.",684,522,14,cDim,tfReg,525,19);
             button(52, 684, 582, 280, 46, snd.testing() ? "Testando… ouça" : "Testar efeito (4 s)", snd.testing());
             button(53, 983, 582, 239, 46, "Bandas reais", false);
         }
@@ -5814,14 +5831,29 @@ public class MainActivity extends Activity {
             switch (id) {
                 case 1: if (eqDialog != null) eqDialog.dismiss(); break;
                 case 2: case 3: case 4: tab = id - 2; break;
-                case 5: snd.setOn(!snd.on); break;
+                case 5:
+                    if (snd.on) snd.setOn(false);
+                    else new AlertDialog.Builder(MainActivity.this)
+                        .setTitle("Usar equalizador Android?")
+                        .setMessage("Nesta Jancar, esse efeito reduziu o volume e abafou o som. Recomendamos o EQ original da central. O teste Android pode alterar o áudio novamente.")
+                        .setPositiveButton("Testar Android", (dialog, which) -> { snd.setOn(true); invalidate(); })
+                        .setNeutralButton("Abrir EQ Jancar", (dialog, which) -> openJancarSound())
+                        .setNegativeButton("Cancelar", null).show();
+                    break;
+                case 9: openJancarSound(); break;
                 case 6: popupInput("Salvar predefinição", "Nome (até 14 letras)", "", n -> { snd.saveCustom(n); reveal = true; invalidate(); }); break;
                 case 7: snd.reset(); break;
                 case 8: snd.compare = !snd.compare; snd.applyNow(); break;
                 case 40: snd.setPre(0f); break;
-                case 50: snd.setLoudOn(!snd.loudOn); break;
+                case 50:
+                    if (!snd.on) snack("Loudness do launcher requer EQ Android; prefira o loudness original Jancar.");
+                    else snd.setLoudOn(!snd.loudOn);
+                    break;
                 case 51: snd.setAutoVol(!snd.autoVolOn); refreshGpsNeed(); break;
-                case 52: snd.testEffect(); handler.postDelayed(this::invalidate, 4200); break;
+                case 52:
+                    if (!snd.on) snack("O teste Android só funciona após ativação manual.");
+                    else { snd.testEffect(); handler.postDelayed(this::invalidate, 4200); }
+                    break;
                 case 53: popupInfo("Diagnóstico do equalizador",snd.bandsReport()); break;
                 default: break;
             }
