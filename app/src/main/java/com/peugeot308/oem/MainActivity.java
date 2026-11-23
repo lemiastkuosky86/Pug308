@@ -2771,6 +2771,8 @@ public class MainActivity extends Activity {
             // Ceu noturno: muitas estrelas fixas, pontuais e de magnitudes diferentes.
             // Sem bloom/desfoque: coordenadas estaveis e cintilacao muito discreta.
             final float[][] skyStars=new float[190][6]; // x,y,raio,alpha,fase,vel. angular
+            final long[] starBirthMs=new long[190];
+            final int[] starLifeMs=new int[190];
             final java.util.Random skyRandom=new java.util.Random(
                     SystemClock.uptimeMillis() ^ 308177L);
             {
@@ -2810,6 +2812,13 @@ public class MainActivity extends Activity {
                     q[2]=realStars[i][2];q[3]=realStars[i][3];
                     q[4]=skyRandom.nextFloat()*6.28318f;
                     q[5]=.00022f+skyRandom.nextFloat()*.00028f;
+                }
+                // Cada estrela tem um ciclo independente: nasce, brilha e some.
+                // Só troca de posição depois de estar inteiramente invisível.
+                long firstSkyFrame=SystemClock.uptimeMillis();
+                for(int i=0;i<skyStars.length;i++){
+                    starLifeMs[i]=9000+skyRandom.nextInt(15000);
+                    starBirthMs[i]=firstSkyFrame-skyRandom.nextInt(starLifeMs[i]);
                 }
             }
             long cometStartMs=-1L,nextCometMs=SystemClock.uptimeMillis()
@@ -2954,7 +2963,8 @@ public class MainActivity extends Activity {
                 c.translate((w-1280f*scale)/2f,(h-720f*scale)/2f);
                 c.scale(scale,scale);
 
-                // Pontos nítidos e persistentes: brilho levemente variável por estrela.
+                // Mantém o estilo pontual e a cintilação, com nascimento e
+                // desaparecimento suave em posições novas a cada ciclo.
                 paint.reset();
                 paint.setAntiAlias(true);
                 long skyNow=SystemClock.uptimeMillis();
@@ -2962,11 +2972,25 @@ public class MainActivity extends Activity {
                 paint.setColor(0xffDDE7F6);
                 for(int i=0;i<skyStars.length;i++){
                     float[] star=skyStars[i];
+                    long age=skyNow-starBirthMs[i];
+                    if(age>=starLifeMs[i]){
+                        starBirthMs[i]=skyNow;
+                        starLifeMs[i]=9000+skyRandom.nextInt(15000);
+                        // Reposicionar somente depois da extinção completa.
+                        star[0]=20f+skyRandom.nextFloat()*1240f;
+                        star[1]=20f+skyRandom.nextFloat()*680f;
+                        age=0L;
+                    }
+                    float fadeIn=Math.min(1f,age/2400f);
+                    float fadeOut=Math.min(1f,(starLifeMs[i]-age)/2400f);
+                    float visibility=Math.max(0f,Math.min(fadeIn,fadeOut));
                     float twinkle=.82f+.18f*(float)Math.sin(
                             skyNow*star[5]+star[4]);
-                    int alpha=(int)Math.max(4f,Math.min(255f,star[3]*twinkle));
-                    paint.setAlpha(alpha);
-                    c.drawCircle(star[0],star[1],star[2],paint);
+                    int alpha=(int)Math.max(0f,Math.min(255f,star[3]*twinkle*visibility));
+                    if(alpha>0){
+                        paint.setAlpha(alpha);
+                        c.drawCircle(star[0],star[1],star[2],paint);
+                    }
                 }
                 if(cometStartMs<0L&&skyNow>=nextCometMs)beginComet(skyNow);
                 if(cometStartMs>=0L){
