@@ -3085,6 +3085,17 @@ public class MainActivity extends Activity {
                 paint.setTextSize(39f);
                 c.drawText(temperature,wx+75f,504f,paint);
 
+                // Cidade da previsao tambem na tela de descanso, sem alterar o layout.
+                String saverCity = weatherDetail != null && !weatherDetail.trim().isEmpty()
+                        ? weatherDetail.trim() : (weatherCity == null ? "" : weatherCity.trim());
+                if (!saverCity.isEmpty()) {
+                    paint.setTextAlign(Paint.Align.CENTER);
+                    paint.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL));
+                    paint.setTextSize(23f);
+                    paint.setColor(0xffAEBAC6);
+                    c.drawText(fitted(saverCity,460f),640f,549f,paint);
+                }
+
                 // Faixa inferior: faixa musical à esquerda e comandos à direita.
                 boolean known=(mediaCtl!=null||cachedSpotifyPreview)
                         &&songTitle!=null&&!songTitle.trim().isEmpty()
